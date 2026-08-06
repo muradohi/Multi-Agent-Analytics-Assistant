@@ -1,0 +1,18 @@
+[project]
+name = "sql-agent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "langchain>=1.3.14",
+    "langchain-core>=1.5.3",
+    "langchain-openai>=1.4.1",
+    "langgraph>=1.2.10",
+    "mysql-connector-python>=26.7.0",
+    "pandas>=3.0.5",
+    "pymysql>=1.2.0",
+    "python-dotenv>=1.2.2",
+    "sqlalchemy>=2.0.51",
+    "streamlit>=1.61.1",
+]

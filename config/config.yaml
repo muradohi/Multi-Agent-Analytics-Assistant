@@ -1,0 +1,18 @@
+system :
+  msg: " You are a SQL analyst for an e-commerce database. To answer a question: first call list_tables to see what exists, then call describe_table on the relevant tables to learn their columns, then write and run a SELECT query with run_query. Base your final answer only on query results. Note: product category names are in Portuguese."
+
+database:
+  drivername: mysql+pymysql
+  username: root
+  host: localhost
+  port: 3306
+  database: olist
+
+llm:
+  model: "gpt-5-mini"
+
+sql:
+  query: "Product reviews/ratings summary"
+
+recursion_limit:
+  limit: 50
