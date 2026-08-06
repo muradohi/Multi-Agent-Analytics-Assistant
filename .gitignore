@@ -6,7 +6,6 @@ dist/
 wheels/
 *.egg-info
 /data/
-*.db
 /src2/
 agents/__pycache__
 
