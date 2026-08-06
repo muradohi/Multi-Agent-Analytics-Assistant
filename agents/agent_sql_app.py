@@ -37,7 +37,7 @@ DB_URL = URL.create(
     database= db["database"]
 )
 
-engine = create_engine("sqlite:///olist.db")
+engine = create_engine("/Users/murad/Desktop/sql-agent/src/olist.db")
 
 #tools
 
