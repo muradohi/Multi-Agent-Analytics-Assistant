@@ -37,11 +37,18 @@ DB_URL = URL.create(
     database= db["database"]
 )
 
-db_path=  "/Users/murad/Desktop/sql-agent/src/olist.db"
+BASE_DIR = Path(__file__).parent.parent
+db_path = BASE_DIR / "src" / "olist.db"
+
+print(db_path)
+print(db_path.exists()) 
 
 engine = create_engine(f"sqlite:///{db_path}")
 
-#tools
+print(db_path.exists())
+print(db_path.resolve())
+
+# tools
 
 @tool
 def list_tables() -> str:
