@@ -93,8 +93,8 @@ class UserInput(BaseModel):
 
 
 SYSTEM = SystemMessage(content=(
-    "You are a SQL analyst for a MySQL e-commerce database. "
-    "Write MySQL-compatible SQL only. Do NOT use PostgreSQL syntax such as "
+    "You are a SQL analyst for a sqlite e-commerce database. "
+    "Write sqlite-compatible SQL only. Do NOT use PostgreSQL syntax such as "
     "'::type' casts (e.g. ::numeric) or Postgres-only functions. "
     "For rounding use ROUND(expr, 2) directly — no casts. "
     "Workflow: call list_tables, then schema_tables on the relevant tables, "
