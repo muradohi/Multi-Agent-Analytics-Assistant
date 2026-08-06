@@ -8,7 +8,7 @@ import os
 # ======================================================================
 # CONFIG
 # ======================================================================
-USE_MYSQL = True   # True -> your local MySQL;  False -> local SQLite file
+USE_MYSQL = False   # True -> your local MySQL;  False -> local SQLite file
 
 DB_URL = URL.create(
     "mysql+pymysql",
