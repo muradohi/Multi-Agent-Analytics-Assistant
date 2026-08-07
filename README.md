@@ -1,11 +1,11 @@
 # 🤖 Multi-Agent Analytics Assistant with Human-in-the-Loop
 
-A supervisor-routed multi-agent system that answers business questions about an
+A supervisor routed multi-agent system that answers business questions about an
 e-commerce database. A **supervisor** classifies each question and routes it to a
 specialist: a **SQL agent** that writes its own schema-aware queries, or a
 **pandas agent** that runs statistical analysis with automated data-quality
-checks. Both specialists pause for **human approval** — of the generated SQL or
-the generated analysis code — before anything executes.
+checks. Both specialists pause for **human approval** of the generated SQL or
+the generated analysis code before anything executes.
 
 Built with LangGraph.
 
@@ -70,7 +70,7 @@ Built with LangGraph.
         └───────────────┘
 ```
 
-Each specialist is a self-contained LangGraph agent nested inside the supervisor.
+Each specialist is a self contained LangGraph agent nested inside the supervisor.
 Their human-approval interrupts surface through the supervisor so a person reviews
 the generated SQL/code before it runs.
 
@@ -141,7 +141,7 @@ The supervisor routes to the pandas agent. It fetches price and review scores,
 runs data-quality checks (flagging duplicates and outliers), proposes pandas code
 that accounts for those issues, and — after your approval — computes the
 correlation (with and without outliers) and answers:
-> "No meaningful correlation — Pearson ≈ 0.05, dropping to ≈ 0.02 after removing
+> "No meaningful correlation Pearson ≈ 0.05, dropping to ≈ 0.02 after removing
 > outliers."
 
 ---
