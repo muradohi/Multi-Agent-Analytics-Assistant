@@ -13,6 +13,7 @@ dependencies = [
     "pandas>=3.0.5",
     "pymysql>=1.2.0",
     "python-dotenv>=1.2.2",
+    "scipy>=1.17.1",
     "sqlalchemy>=2.0.51",
     "streamlit>=1.61.1",
 ]

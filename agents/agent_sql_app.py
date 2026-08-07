@@ -40,13 +40,13 @@ DB_URL = URL.create(
 BASE_DIR = Path(__file__).parent.parent
 db_path = BASE_DIR / "src" / "olist.db"
 
-print(db_path)
-print(db_path.exists()) 
+# print(db_path)
+# print(db_path.exists()) 
 
 engine = create_engine(f"sqlite:///{db_path}")
 
-print(db_path.exists())
-print(db_path.resolve())
+# print(db_path.exists())
+# print(db_path.resolve())
 
 # tools
 
@@ -103,7 +103,7 @@ class UserInput(BaseModel):
 
 SYSTEM = SystemMessage(content=(
     "You are a SQL analyst for a sqlite e-commerce database. "
-    "Write sqlite-compatible SQL only. Do NOT use PostgreSQL syntax such as "
+    "Write sqlite compatible SQL only. Do NOT use PostgreSQL syntax such as "
     "'::type' casts (e.g. ::numeric) or Postgres-only functions. "
     "For rounding use ROUND(expr, 2) directly — no casts. "
     "Workflow: call list_tables, then schema_tables on the relevant tables, "
@@ -123,7 +123,7 @@ def llm_node(state: UserInput) -> str:
     return {"input_text" : [llm_response]}
 
 def tool_node(state: UserInput) -> str:
-    tools_by_name = {tool.name: tool for tool in tools}
+    tools_by_name = {t.name: t for t in tools}
     last_msg = state.input_text[-1]
     out_messages = []
     updates = {}
@@ -315,6 +315,6 @@ def ask(question: str, thread_id: str = "sql-session-1"):
 
 
 
-if __name__ == "__main__":
-    q = cnf["sql"]["query"]
-    ask(q)
+# if __name__ == "__main__":
+#     q = cnf["sql"]["query"]
+#     ask(q)

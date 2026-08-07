@@ -1,0 +1,189 @@
+from dotenv import load_dotenv
+from sqlalchemy import text, create_engine, URL, inspect
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import SystemMessage, ToolMessage, HumanMessage, AIMessage, AnyMessage
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph.message import add_messages
+from langgraph.types import interrupt, Command
+from pydantic import Field, BaseModel
+from typing import List, Annotated, Literal
+from langchain.tools import tool
+import os
+from langgraph.graph import StateGraph, START, END
+import yaml
+from pathlib import Path
+
+from agents.agent_sql_app import UserInput, llm, ask, sql_agent
+from agents.agent_pandas_app import PandasState ,pandas_agent
+
+
+load_dotenv()
+
+try:
+    config_path = Path(__file__).parent.parent / "config/config.yaml"
+    print("Config path is correct")
+except:
+    print("Config Path is not correct")
+
+with open(config_path, 'r') as f:
+    cnf = yaml.safe_load(f)
+
+class Route(BaseModel):
+    destination: Literal["sql", "pandas", "direct"]
+    reasoning : str
+
+class SupervisorState(UserInput, PandasState):
+    destination: str = ""
+    reasoning: str = ""
+
+llm_with_schema = llm.with_structured_output(Route)
+
+def sup_node(state: UserInput):
+    system_msg = SystemMessage(content=(
+    "You route a user's question to the right handler. Choose:\n"
+    "- 'sql' for questions answerable by a database query (counts, totals, filters, joins)\n"
+    "- 'pandas' for statistical analysis or computation beyond SQL (correlations, distributions)\n"
+    "- 'direct' for questions needing no data (definitions, 'what can you do')\n"
+    "Give a short reason for your choice."
+))
+
+    user_msg = state.input_text
+    prompt = [system_msg] + user_msg
+    
+    llm_response = llm_with_schema.invoke(prompt)
+
+    destination = llm_response.destination
+    reasoning = llm_response.reasoning
+
+    return {"destination": destination, "reasoning": reasoning}
+
+
+def direct_node(state: SupervisorState):
+
+    user_query = state.input_text
+    llm_response = llm.invoke(user_query)
+    ai_msg = [AIMessage(content=llm_response.content)]
+
+    return {"input_text": ai_msg}
+
+def sql_node(state: SupervisorState):
+    print("SQL node is running")
+    reason = state.reasoning
+    print(f"WHY:\n{reason}")
+    sub_config = {"configurable": {"thread_id": "sql-sub-1"}, "recursion_limit": 35}
+    
+    q = state.input_text[-1].content
+    # breakpoint()
+    print(q)
+    llm_response = sql_agent.invoke(
+        {"input_text": [HumanMessage(content=q)]},
+        sub_config,
+        
+    )
+    answer = llm_response["input_text"][-1].content
+    print(answer)
+    return {"input_text": [AIMessage(content=answer)]}
+
+def pandas_node(state: SupervisorState):
+    return {"input_text": [AIMessage(content="pandas agent not built yet")]}
+
+
+def approval_node(state: SupervisorState):
+
+    decision = interrupt({
+        "proposed_sql": state.proposed_sql,
+        "instruction": "action: approve / reject / revise (+notes)"
+    })
+
+    action = decision["action"]
+
+    if action == "revise":
+        notes = decision.get("notes","")
+
+        return {
+                    "input_text": [HumanMessage(content=(
+                        f"The reviewer requested changes: {notes}. "
+                        f"Revise your SQL and call propose_final_query again with the corrected query. "
+                        f"Do NOT answer in prose — you must call propose_final_query."
+                    ))],
+                    "proposed_sql": "",
+                    "query_result": "revise",
+            }
+
+    elif action == "reject":
+        return {"query_result": "rejected"}
+
+    return {"query_result": "approved"}
+    
+
+
+
+
+
+
+
+def conditional_edge(state: SupervisorState) -> str:
+    category = state.destination
+    if category == "sql":    return "sql_route"
+    elif category == "pandas": return "pandas_route"
+    elif category == "direct": return "direct_route"
+    else: raise ValueError("Invalid category")
+
+
+
+
+graph = StateGraph(SupervisorState)
+
+graph.add_node("sup_node", sup_node)
+graph.add_node("sql_node", sql_agent)
+graph.add_node("pandas_node", pandas_agent)
+graph.add_node("direct_node", direct_node)
+graph.add_node("approval_node", approval_node)
+
+graph.add_edge(START, "sup_node")
+graph.add_conditional_edges("sup_node", conditional_edge,{"sql_route":"sql_node", "pandas_route":"pandas_node", "direct_route": "direct_node"})
+# graph.add_edge("sql_node", "approval_node")
+# graph.add_conditional_edges("sql_node", conditional_edge,{"sql_route":"sql_node", "pandas_route":"pandas_node", "direct_route": "direct_node"})
+
+graph.add_edge("sql_node", END)
+graph.add_edge("pandas_node", END)
+graph.add_edge("direct_node", END)
+
+
+checkpointer = InMemorySaver()
+sup_graph = graph.compile(checkpointer= checkpointer)
+
+def run_supervisor(question: str, thread_id: str=  "sup-1"):
+    breakpoint()
+    sup_config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 35}
+    result = sup_graph.invoke(
+        {"input_text": [HumanMessage(content=question)]}, sup_config
+    )
+    print(result)
+
+
+
+    while "__interrupt__" in result:
+        payload = result["__interrupt__"][0].value
+        if "proposed_sql" in payload:
+            print("\n=== PROPOSED SQL ===\n", payload["proposed_sql"])
+        elif "proposed_code" in payload:
+            print("\n=== DATA-QUALITY REPORT ===\n", payload.get("qa_report", ""))
+            print("\n=== PROPOSED CODE ===\n", payload["proposed_code"])
+
+        choice = input("[a]pprove / [r]evise / [s]kip? ").lower().strip()
+
+        if choice.startswith("r"):
+            notes = input("What should change? ")
+            result = sup_graph.invoke(Command(resume={"action": "revise", "notes": notes}), sup_config)
+        elif choice.startswith("s"):
+            result = sup_graph.invoke(Command(resume={"action": "reject"}), sup_config)
+        else:
+            result = sup_graph.invoke(Command(resume={"action": "approve"}), sup_config)
+
+    print("\n=== ANSWER ===")
+    print(result["input_text"][-1].content)
+
+if __name__ == "__main__":
+    for q in ["Is there a correlation between product price and review score?",]:
+        run_supervisor(q)
