@@ -185,7 +185,3 @@ sql-analytics-agent/
 - [ ] Conversation memory across questions
 
 ---
-
-## 📄 License
-
-MIT
