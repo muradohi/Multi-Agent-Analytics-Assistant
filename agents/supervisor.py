@@ -15,6 +15,8 @@ from pathlib import Path
 
 from agents.agent_sql_app import UserInput, llm, ask, sql_agent
 from agents.agent_pandas_app import PandasState ,pandas_agent
+import matplotlib.pyplot as plt
+import plotly
 
 
 load_dotenv()
