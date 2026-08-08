@@ -1,29 +1,3 @@
-"""
-==============================================================================
- PANDAS ANALYSIS AGENT — heavily commented, junior-friendly walkthrough
-==============================================================================
-
-This is the same agent you wrote, explained line by line. Read it top to bottom
-like a tutorial. The FLOW, in plain words:
-
-  1. FETCH      : the agent looks at the database schema, then writes a SQL
-                  query to pull just the data it needs into a DataFrame.
-  2. DATA QUALITY: we automatically check that data (nulls? duplicates? weird
-                  types? outliers?) and write a little report. NO AI here — just
-                  reliable pandas checks.
-  3. PROPOSE    : the agent writes pandas CODE to answer the question, and it
-                  gets to see the data-quality report first so it can be careful.
-  4. APPROVAL   : we PAUSE and show a human the report + the code. The human
-                  says approve / revise / skip. (This is the "interrupt".)
-  5. EXECUTE    : if approved, we run that code safely and capture the result.
-  6. ANSWER     : we turn the raw result into a clear sentence for the user.
-
-Think of it as an assembly line. Each "node" is one station. The data travels
-through "state" (a shared box) from station to station.
-==============================================================================
-"""
-
-# ---- imports: the tools we need ----
 import os, io, contextlib
 from typing import Annotated
 
@@ -41,10 +15,13 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import interrupt, Command
+import matplotlib.pyplot as plt
+import plotly
+import seaborn as sns
 
 from agents.agent_sql_app import engine, llm, list_tables, schema_tables
 
-load_dotenv()   # read the .env file into environment variables
+load_dotenv()
 
 
 
