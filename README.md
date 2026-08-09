@@ -1,187 +1,245 @@
-# 🤖 Multi-Agent Analytics Assistant with Human-in-the-Loop
+# 🤖 Multi-Agent Analytics Assistant (Human-in-the-Loop)
 
-A supervisor routed multi-agent system that answers business questions about an
-e-commerce database. A **supervisor** classifies each question and routes it to a
-specialist: a **SQL agent** that writes its own schema-aware queries, or a
-**pandas agent** that runs statistical analysis with automated data-quality
-checks. Both specialists pause for **human approval** of the generated SQL or
-the generated analysis code before anything executes.
+Ask questions about an e-commerce database in plain English and get real answers —
+with a human check on everything the AI generates before it runs.
 
-Built with LangGraph.
+Under the hood, a **supervisor** reads each question and hands it to the right
+specialist: a **SQL agent** that writes its own schema-aware queries, a **pandas
+agent** that runs statistical analysis with automated data-quality checks, a
+**charts agent** that fetches data and plots it, or a **direct** answer when the
+question can be answered from the conversation so far. Before any generated SQL,
+analysis code, or chart code executes, the system pauses and asks you to approve,
+revise, or skip it.
 
-> Ask a question in plain English → a supervisor decides which agent should handle
-> it → that agent explores the data and proposes SQL or Python code → **you review,
-> revise, or approve it** → it runs safely and returns a clear answer.
+Built with LangGraph, with an interactive Streamlit chat UI.
 
----
-
-## ✨ Features
-
-- **Supervisor routing** — a router classifies each question and delegates it to
-  the right specialist agent (SQL, pandas, or a direct answer).
-- **SQL agent** — discovers the database schema itself and writes multi-table
-  queries grounded in the real schema, rather than hallucinating table/column names.
-- **Pandas agent** — for statistical questions (correlations, distributions) that
-  SQL can't cleanly answer. It fetches the needed data, runs **automated
-  data-quality checks** (nulls, duplicates, type mismatches, outliers), and writes
-  pandas code informed by those checks.
-- **Human-in-the-loop approval** — both agents pause and show the human the
-  generated SQL or code (plus the data-quality report), who can **approve**,
-  **revise** (with feedback), or **skip** before execution.
-- **Nested interrupts** — each specialist is a sub-graph whose approval pause
-  surfaces up through the supervisor for the human, then resumes back down.
-- **Safety** — read-only SQL execution, and sandboxed execution of model-generated
-  pandas code in a scoped namespace.
-- **Interactive Streamlit UI** — shows routing, generated code, results, and the
-  approval workflow.
+> Ask a question → the supervisor picks the right agent → that agent explores the
+> data and proposes SQL or Python → **you review, revise, or approve it** → it runs
+> safely and answers in plain language.
 
 ---
 
-## 🏗️ Architecture
+## ✨ What it does
+
+- **Routes intelligently.** A supervisor classifies each question and sends it to
+  one of four handlers — `sql`, `pandas`, `viz`, or `direct` — and the UI shows you
+  which agent it picked and why.
+- **Writes its own SQL.** The SQL agent inspects the database schema first, then
+  writes multi-table queries grounded in the real tables and columns instead of
+  guessing names.
+- **Does real statistics.** For questions SQL can't cleanly answer (correlations,
+  distributions), the pandas agent fetches the data, runs **automated data-quality
+  checks** — nulls, duplicates, type mismatches, outliers — and writes analysis
+  code that accounts for what it found.
+- **Draws charts.** The charts agent fetches the right columns, generates matplotlib
+  code, and returns both the image and the numbers behind it.
+- **Keeps a human in the loop.** Every agent that generates code pauses and shows
+  you the SQL, the analysis code, or the chart code (plus the data-quality report)
+  so you can **approve**, **revise** with feedback, or **skip** — before anything runs.
+- **Remembers the conversation.** Follow-up questions like "what was that Pearson
+  value again?" are answered instantly from earlier in the chat instead of
+  re-running the analysis.
+- **Runs safely.** SQL execution is read-only (SELECT only), and model-generated
+  pandas code runs in a scoped, sandboxed namespace.
+
+---
+
+## 🏗️ How it works
+
+Each specialist is a self-contained LangGraph sub-graph nested inside the
+supervisor. When a specialist pauses for approval, that interrupt surfaces up
+through the supervisor to you, and your decision resumes it back down.
 
 ```
                           ┌──────────────┐
-        user question ───►│  SUPERVISOR  │  classifies + routes the question
-                          └──────────────┘
-                                 │
-                ┌────────────────┼────────────────┐
-                ▼                ▼                 ▼
-        ┌──────────────┐  ┌──────────────┐   ┌───────────┐
-        │  SQL AGENT   │  │ PANDAS AGENT │   │  direct   │
-        │              │  │ + data-QA    │   │  answer   │
-        │ explore →    │  │ fetch → QA → │   └───────────┘
-        │ propose SQL  │  │ propose code │
-        └──────────────┘  └──────────────┘
-                │                │
-                ▼                ▼
-        ┌───────────────────────────────┐
-        │      HUMAN APPROVAL (⏸)        │  approve / revise / skip
-        │  reviews SQL or code + QA      │  (nested interrupt → supervisor)
-        └───────────────────────────────┘
-                │
-                ▼
-        ┌───────────────┐
-        │   EXECUTE      │  read-only SQL / sandboxed pandas
-        └───────────────┘
-                │
-                ▼
-        ┌───────────────┐
-        │    ANSWER      │  clear, plain-language response
-        └───────────────┘
+        user question ───►│  SUPERVISOR  │  reads the question, picks a route
+                          └──────┬───────┘
+              ┌──────────────────┼──────────────────┬──────────────┐
+              ▼                  ▼                  ▼              ▼
+       ┌────────────┐    ┌──────────────┐   ┌────────────┐  ┌──────────┐
+       │ SQL AGENT  │    │ PANDAS AGENT │   │ CHARTS     │  │  DIRECT  │
+       │            │    │ + data-QA    │   │ AGENT      │  │  answer  │
+       │ explore →  │    │ fetch → QA → │   │ fetch →    │  │ (recall) │
+       │ propose SQL│    │ propose code │   │ plot code  │  └──────────┘
+       └─────┬──────┘    └──────┬───────┘   └─────┬──────┘
+             └──────────────────┼─────────────────┘
+                                ▼
+                  ┌───────────────────────────────┐
+                  │      HUMAN APPROVAL  (⏸)       │  approve / revise / skip
+                  │  review the SQL / code + QA    │  (nested interrupt → supervisor)
+                  └───────────────┬───────────────┘
+                                  ▼
+                  ┌───────────────────────────────┐
+                  │            EXECUTE             │  read-only SQL / sandboxed pandas
+                  └───────────────┬───────────────┘
+                                  ▼
+                  ┌───────────────────────────────┐
+                  │            ANSWER              │  clear, plain-language response
+                  └───────────────────────────────┘
 ```
 
-Each specialist is a self contained LangGraph agent nested inside the supervisor.
-Their human-approval interrupts surface through the supervisor so a person reviews
-the generated SQL/code before it runs.
+A couple of design choices that make this hold together:
+
+- **Each question fetches its own data.** Agents reset their fetch state at the
+  start of every question, so a follow-up never accidentally analyzes the previous
+  question's data.
+- **The supervisor and direct agent see the full conversation** (for routing and
+  recall), while each worker agent is pinned to the *current* question — so the SQL
+  agent doesn't drag an earlier question's query into a new one.
 
 ---
 
-## 🛠️ Tech Stack
+## 🛠️ Tech stack
 
 - **LangGraph** — multi-agent orchestration, routing, nested interrupts, checkpointing
-- **LangChain + OpenAI** — the LLMs that route, write SQL/code, and answer
-- **SQLAlchemy + PyMySQL** — database access
-- **MySQL / SQLite** — the data store (Olist e-commerce dataset)
+- **LangChain + OpenAI** — the models that route, write SQL/code, and interpret results
+- **SQLAlchemy** — database access
+- **SQLite** (Olist e-commerce dataset) — the data store
 - **pandas + NumPy** — data fetching, quality checks, and analysis
-- **Streamlit** — the interactive UI
+- **matplotlib** — chart generation
+- **Streamlit** — the interactive chat UI
 
 ---
 
 ## 📦 Setup
 
 ### 1. Clone and install
+
 ```bash
 git clone https://github.com/muradohi/sql-analytics-agent.git
 cd sql-analytics-agent
 python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Set up the database
+### 2. Get the data
+
 Download the [Olist Brazilian E-Commerce dataset](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce)
-from Kaggle, unzip the CSVs into a `data/` folder, then load them:
+from Kaggle, unzip the CSVs into a `data/` folder, then load them into the database:
+
 ```bash
 python load_data.py
 ```
-This creates the tables (`orders`, `order_items`, `products`, `customers`,
-`order_reviews`).
 
-### 3. Configure secrets
-Create a `.env` file:
+This builds the tables (`orders`, `order_items`, `products`, `customers`,
+`order_reviews`) into a local SQLite database (`olist.db`).
+
+### 3. Add your API key
+
+Create a `.env` file in the project root (it's gitignored):
+
 ```
 OPENAI_API_KEY=sk-your-key-here
-DB_PASSWORD=your-mysql-password
 ```
 
-### 4. Run
-Command-line (the supervisor + both agents):
-```bash
-python supervisor.py
+Non-secret settings (the model name, DB connection) live in `config/config.yaml`:
+
+```yaml
+llm:
+  model: gpt-5-mini
+
+database:
+  drivername: sqlite
+  database: olist
 ```
-Interactive UI:
+
+### 4. Run it
+
+The Streamlit app (recommended):
+
 ```bash
 streamlit run app.py
 ```
+
+Or drive the supervisor from the command line:
+
+```bash
+python -m agents.supervisor
+```
+
+> Run from the project root so the `agents` package imports resolve.
 
 ---
 
 ## 💬 Examples
 
-**A database question → SQL agent:**
+**A database question → SQL agent**
 > "How many orders were cancelled?"
 
-The supervisor routes to the SQL agent, which inspects the schema, proposes a
-query for your approval, and (once approved) runs it and answers.
+The supervisor routes to the SQL agent. It inspects the schema, proposes a
+`COUNT` query for your approval, runs it once approved, and answers: *625 orders
+were cancelled.*
 
-**A statistical question → pandas agent:**
-> "Is there a correlation between product price and review score?"
+**A statistical question → pandas agent**
+> "Is there a correlation between price and review score?"
 
-The supervisor routes to the pandas agent. It fetches price and review scores,
-runs data-quality checks (flagging duplicates and outliers), proposes pandas code
-that accounts for those issues, and — after your approval — computes the
-correlation (with and without outliers) and answers:
-> "No meaningful correlation Pearson ≈ 0.05, dropping to ≈ 0.02 after removing
-> outliers."
+Routed to the pandas agent. It fetches price and review scores, runs
+data-quality checks (flagging duplicates and outliers), proposes pandas code that
+handles them, and after approval reports: *no meaningful correlation — Pearson ≈
+0.05, dropping to ≈ 0.02 once outliers are removed.*
+
+**A chart request → charts agent**
+> "Plot the top 5 product categories by number of orders"
+
+Routed to the charts agent. It fetches the ranked categories, proposes matplotlib
+code for a bar chart, and after approval shows the plot along with the underlying
+numbers.
+
+**A follow-up → direct answer (from memory)**
+> "What was the Pearson value again?"
+
+No new query needed — the supervisor recognizes the answer is already in the
+conversation and recalls it directly.
 
 ---
 
-## 📂 Project Structure
+## 📂 Project structure
 
 ```
 sql-analytics-agent/
-├── supervisor.py          # the supervisor: routing + nested agents
-├── agent_sql_app.py       # the SQL agent (schema-aware, HITL)
-├── agent_pandas_app.py    # the pandas agent (data-QA + HITL)
-├── app.py                 # Streamlit UI
-├── load_data.py           # loads the Olist dataset
+├── app.py                       # Streamlit chat UI (entry point)
+├── agents/
+│   ├── __init__.py              # re-exports the supervisor graph + engine
+│   ├── supervisor.py            # supervisor: routing + nested agents
+│   ├── agent_sql_app.py         # SQL agent (schema-aware, HITL approval)
+│   ├── agent_pandas_app.py      # pandas agent (data-quality checks + HITL)
+│   └── agent_viz_app.py         # charts agent (fetch → plot → HITL)
+├── config/
+│   └── config.yaml              # model + database settings
+├── load_data.py                 # loads the Olist CSVs into SQLite
+├── data/                        # Olist CSVs (gitignored)
 ├── requirements.txt
-├── .env                   # secrets (gitignored)
+├── .env                         # secrets (gitignored)
 └── README.md
 ```
 
 ---
 
-## 🧠 Design Decisions
+## 🧠 Design decisions
 
 - **Determinism where it belongs.** Data loading and data-quality checks are plain
-  code, not LLM calls — they have exact correct answers and must be reliable. The
-  LLM is used only where judgment is needed (routing, writing queries/code,
-  interpreting results).
-- **Schema discovery over hardcoding.** The SQL agent inspects the database itself,
-  so it adapts to the schema rather than relying on hardcoded table names.
-- **Human oversight on generated code.** Neither agent executes generated SQL or
-  Python without a human reviewing it first — a real approval gate, not just a demo.
-- **Safety layers.** Read-only SQL, sandboxed pandas execution, and the human gate
-  together limit what generated code can do.
+  code, not LLM calls — they have exact right answers and must be reliable. The
+  model is used only where judgment is needed: routing, writing queries and code,
+  and interpreting results.
+- **Schema discovery over hardcoding.** Agents inspect the database themselves, so
+  the system adapts to the schema rather than depending on hardcoded table names.
+- **A real approval gate, not a demo.** No agent runs generated SQL or Python
+  without a human seeing it first — and the revise loop feeds your feedback back to
+  the model so it can correct course.
+- **Memory vs. task, deliberately separated.** The supervisor holds the
+  conversation for routing and recall; the worker agents are scoped to the current
+  question so old context can't leak into a new query.
+- **Layered safety.** Read-only SQL, sandboxed pandas execution, and the human gate
+  together bound what generated code can do.
 
 ---
 
 ## 🔮 Roadmap
 
-- [ ] Multi-task routing (splitting a compound question across both agents)
+- [ ] "Bring your own OpenAI key" so anyone can use the deployed app freely
+- [ ] Multi-task routing (splitting a compound question across agents)
 - [ ] A retrieval (RAG) agent over review text, fused with structured results
-- [ ] Charts/visualizations of analysis output
-- [ ] Conversation memory across questions
+- [ ] Persistent conversation memory across sessions
 
 ---

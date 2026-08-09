@@ -98,8 +98,13 @@ def direct_node(state: SupervisorState):
 
     prompt = [
     SystemMessage(
-        content="Answer only from the conversation history. "
-                "If the answer is not already present, say you don't know."
+        content= "You answer questions that need no database query. Two cases:\n"
+            "1. If the answer was already computed or stated earlier in this "
+            "conversation, recall it exactly from the history.\n"
+            "2. Otherwise, answer from your own general knowledge "
+            "(definitions, explanations, capabilities, greetings).\n"
+            "Only say you don't know if it's a live/external fact you genuinely "
+            "can't know (e.g. current weather)."
     ),
     *state.input_text
 ]
