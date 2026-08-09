@@ -29,7 +29,8 @@ class PandasState(BaseModel):
 
     input_text: Annotated[list[AnyMessage], add_messages]
 
-    fetch_sql: str = "" 
+    fetch_sql: str = ""
+    query_proposed_pandas: bool = False
     qa_report: str = ""
     proposed_code: str = ""
     code_result: str = ""
@@ -56,11 +57,27 @@ SYSTEM = SystemMessage(content=(
     "Write SQLite-compatible SQL. Category names are Portuguese."
 ))
 
+def latest_question(state) -> str:
+    for msg in reversed(state.input_text):
+        if isinstance(msg, HumanMessage):
+            return msg.content
+    return ""
+
+def current_turn_messages(state):
+    """Messages from the latest human turn onward — this question's own
+    exploration only, not previous questions' tool calls."""
+    msgs = state.input_text
+    # find the index of the last HumanMessage
+    last_human = max(
+        (i for i, m in enumerate(msgs) if isinstance(m, HumanMessage)),
+        default=0,
+    )
+    return msgs[last_human:]
 
 def fetch_llm_node(state: PandasState) -> dict:
-
-    response = llm_with_tools.invoke([SYSTEM] + state.input_text)
-    return {"input_text": [response]}
+    msg = current_turn_messages(state)
+    response = llm_with_tools.invoke([SYSTEM, *msg])
+    return {"input_text": [response], "query_proposed_pandas": False, "fetch_sql": ""}
 
 
 def fetch_tool_node(state: PandasState) -> dict:
@@ -68,10 +85,12 @@ def fetch_tool_node(state: PandasState) -> dict:
     last_msg = state.input_text[-1]
     out = []
     updates = {}
+    proposed = False
 
 
     for call in last_msg.tool_calls:
         if call["name"] == "propose_fetch_sql":
+            proposed = True
  
             updates["fetch_sql"] = call["args"]["sql"]
             out.append(ToolMessage(content="Fetch query recorded.",
@@ -82,6 +101,7 @@ def fetch_tool_node(state: PandasState) -> dict:
             out.append(ToolMessage(content=str(res), tool_call_id=call["id"]))
 
     updates["input_text"] = out
+    updates["query_proposed_pandas"] = proposed
     return updates
 
 
@@ -159,7 +179,7 @@ def propose_analysis_node(state: PandasState) -> dict:
         "Write pandas code to answer the question. Data is in `df`; `pd`,`np` available. "
         "Assign the answer to a variable `result`. Account for issues in the quality "
         "report (drop nulls before correlating, etc). Call propose_analysis_code once.\n\n"
-        f"Question: {state.input_text[0].content}\n"
+        f"Question: {latest_question(state)}\n"
         f"Fetch SQL: {state.fetch_sql}\n"
         f"Data-quality report:\n{state.qa_report}"
     ))
@@ -247,7 +267,7 @@ def answer_node(state: PandasState) -> dict:
             "with the answer, use plain numbers. Note relevant data-quality caveats."
         )),
         HumanMessage(content=(
-            f"Question: {state.input_text[0].content}\n"
+            f"Question: {latest_question(state)}\n"
             f"Data-quality: {state.qa_report}\n"
             f"Analysis code: {state.proposed_code}\n"
             f"Result: {state.code_result}"
@@ -263,7 +283,7 @@ def after_fetch_llm(state):
 
 
 def after_fetch_tools(state):
-    return "data_quality" if state.fetch_sql else "fetch_llm"
+    return "data_quality" if state.query_proposed_pandas else "fetch_llm"
 
 
 def after_propose(state):

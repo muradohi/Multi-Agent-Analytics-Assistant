@@ -15,6 +15,7 @@ from pathlib import Path
 
 from agents.agent_sql_app import UserInput, llm, ask, sql_agent
 from agents.agent_pandas_app import PandasState ,pandas_agent
+from agents.agent_viz_app import VizState, viz_agent
 import matplotlib.pyplot as plt
 import plotly
 
@@ -31,23 +32,56 @@ with open(config_path, 'r') as f:
     cnf = yaml.safe_load(f)
 
 class Route(BaseModel):
-    destination: Literal["sql", "pandas", "direct"]
+    destination: Literal["sql", "pandas", "viz", "direct"]
     reasoning : str
 
-class SupervisorState(UserInput, PandasState):
+class SupervisorState(UserInput, PandasState, VizState):
     destination: str = ""
     reasoning: str = ""
 
 llm_with_schema = llm.with_structured_output(Route)
 
+SYSTEM = SystemMessage(content="""
+    You are a routing agent.
+
+    Always base your decision on the user's LATEST question.
+
+    Before choosing a route, first determine whether the latest question can be answered completely from the current conversation history.
+
+    Routing priority:
+
+    1. MEMORY
+    If the answer has already been computed or explicitly stated earlier in the current conversation, return route="direct".
+    Do not query the database again.
+
+    Only choose this route if the previous answer fully answers the user's latest question.
+    If the required information is missing, incomplete, or only partially related, continue to the routing rules below.
+
+    2. SQL
+    If answering requires retrieving new data from the SQLite database using SQL
+    (counts, sums, averages, joins, filters, rankings, group-bys, simple distributions, etc.),
+    return route="sql".
+
+    3. PANDAS
+    If SQL results require additional statistical analysis
+    (correlation, regression, variance, standard deviation, quantiles, hypothesis tests, etc.),
+    return route="pandas".
+
+    4. VIZ
+    If the user requests a chart, plot, graph, draw, or visualization,
+    return route="viz".
+
+    5. DIRECT
+    If the question requires no database access
+    (definitions, explanations, capabilities, greetings, or other general knowledge),
+    return route="direct".
+
+    Always return:
+    - route
+    - a one-sentence reason
+    """)
 def sup_node(state: UserInput):
-    system_msg = SystemMessage(content=(
-    "You route a user's question to the right handler. Choose:\n"
-    "- 'sql' for questions answerable by a database query (counts, totals, filters, joins)\n"
-    "- 'pandas' for statistical analysis or computation beyond SQL (correlations, distributions)\n"
-    "- 'direct' for questions needing no data (definitions, 'what can you do')\n"
-    "Give a short reason for your choice."
-))
+    system_msg = SYSTEM
 
     user_msg = state.input_text
     prompt = [system_msg] + user_msg
@@ -62,32 +96,18 @@ def sup_node(state: UserInput):
 
 def direct_node(state: SupervisorState):
 
-    user_query = state.input_text
-    llm_response = llm.invoke(user_query)
+    prompt = [
+    SystemMessage(
+        content="Answer only from the conversation history. "
+                "If the answer is not already present, say you don't know."
+    ),
+    *state.input_text
+]
+    llm_response = llm.invoke(prompt)
     ai_msg = [AIMessage(content=llm_response.content)]
 
     return {"input_text": ai_msg}
 
-def sql_node(state: SupervisorState):
-    print("SQL node is running")
-    reason = state.reasoning
-    print(f"WHY:\n{reason}")
-    sub_config = {"configurable": {"thread_id": "sql-sub-1"}, "recursion_limit": 35}
-    
-    q = state.input_text[-1].content
-    # breakpoint()
-    print(q)
-    llm_response = sql_agent.invoke(
-        {"input_text": [HumanMessage(content=q)]},
-        sub_config,
-        
-    )
-    answer = llm_response["input_text"][-1].content
-    print(answer)
-    return {"input_text": [AIMessage(content=answer)]}
-
-def pandas_node(state: SupervisorState):
-    return {"input_text": [AIMessage(content="pandas agent not built yet")]}
 
 
 def approval_node(state: SupervisorState):
@@ -128,6 +148,7 @@ def conditional_edge(state: SupervisorState) -> str:
     category = state.destination
     if category == "sql":    return "sql_route"
     elif category == "pandas": return "pandas_route"
+    elif category == "viz": return "viz_route"
     elif category == "direct": return "direct_route"
     else: raise ValueError("Invalid category")
 
@@ -139,16 +160,18 @@ graph = StateGraph(SupervisorState)
 graph.add_node("sup_node", sup_node)
 graph.add_node("sql_node", sql_agent)
 graph.add_node("pandas_node", pandas_agent)
+graph.add_node("viz_node", viz_agent)
 graph.add_node("direct_node", direct_node)
 graph.add_node("approval_node", approval_node)
 
 graph.add_edge(START, "sup_node")
-graph.add_conditional_edges("sup_node", conditional_edge,{"sql_route":"sql_node", "pandas_route":"pandas_node", "direct_route": "direct_node"})
+graph.add_conditional_edges("sup_node", conditional_edge,{"sql_route":"sql_node", "pandas_route":"pandas_node", "viz_route": "viz_node", "direct_route": "direct_node"})
 # graph.add_edge("sql_node", "approval_node")
 # graph.add_conditional_edges("sql_node", conditional_edge,{"sql_route":"sql_node", "pandas_route":"pandas_node", "direct_route": "direct_node"})
 
 graph.add_edge("sql_node", END)
 graph.add_edge("pandas_node", END)
+graph.add_edge("viz_node", END)
 graph.add_edge("direct_node", END)
 
 
@@ -172,6 +195,10 @@ def run_supervisor(question: str, thread_id: str=  "sup-1"):
         elif "proposed_code" in payload:
             print("\n=== DATA-QUALITY REPORT ===\n", payload.get("qa_report", ""))
             print("\n=== PROPOSED CODE ===\n", payload["proposed_code"])
+            
+        elif "chart_code" in payload:
+                    print("\n=== Chart REPORT ===\n", payload.get("chart_code", ""))
+                    print("\n=== PROPOSED PATH ===\n", payload["chart_path"])
 
         choice = input("[a]pprove / [r]evise / [s]kip? ").lower().strip()
 

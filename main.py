@@ -1,6 +1,9 @@
-def main():
-    print("Hello from sql-agent!")
+a = "a"
+b= "b"
+c= "c"
+
+tools = [a, b, c]
 
 
-if __name__ == "__main__":
-    main()
+tools_by_name = {t.name: t for t in tools}
+print(tools_by_name)

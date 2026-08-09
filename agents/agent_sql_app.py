@@ -40,15 +40,8 @@ DB_URL = URL.create(
 BASE_DIR = Path(__file__).parent.parent
 db_path = BASE_DIR / "src" / "olist.db"
 
-# print(db_path)
-# print(db_path.exists()) 
-
 engine = create_engine(f"sqlite:///{db_path}")
 
-# print(db_path.exists())
-# print(db_path.resolve())
-
-# tools
 
 @tool
 def list_tables() -> str:
@@ -99,6 +92,7 @@ class UserInput(BaseModel):
     input_text : Annotated[list[AnyMessage], add_messages]
     proposed_sql: str = ""
     query_result: str = ""
+    query_proposed: bool = False
 
 
 SYSTEM = SystemMessage(content=(
@@ -112,25 +106,33 @@ SYSTEM = SystemMessage(content=(
 ))
 
 
+def current_turn_messages(state):
+    """Messages from the latest human turn onward — this question's own
+    exploration only, not previous questions' tool calls."""
+    msgs = state.input_text
+    # find the index of the last HumanMessage
+    last_human = max(
+        (i for i, m in enumerate(msgs) if isinstance(m, HumanMessage)),
+        default=0,
+    )
+    return msgs[last_human:]
 
-def llm_node(state: UserInput) -> str:
-    user_msg = state.input_text
-    system_msg = SYSTEM
-    prompt = [system_msg] + user_msg
-
-    llm_response = llm_with_tools.invoke(prompt)
-
-    return {"input_text" : [llm_response]}
+def llm_node(state: UserInput) -> dict:
+    turn = current_turn_messages(state)
+    prompt = [SYSTEM, *turn]
+    return {"input_text": [llm_with_tools.invoke(prompt)]}
 
 def tool_node(state: UserInput) -> str:
     tools_by_name = {t.name: t for t in tools}
     last_msg = state.input_text[-1]
     out_messages = []
     updates = {}
+    proposed = False
 
 
     for call in last_msg.tool_calls:
         if call["name"] == "propose_final_query":
+            proposed = True
             updates["proposed_sql"] = call['args']["sql"]
             out_messages.append(ToolMessage(
                 content="Query recorded for approval.",
@@ -149,9 +151,16 @@ def tool_node(state: UserInput) -> str:
 
             out_messages.append(ToolMessage(content=f"{str(res)}", tool_call_id = tool_id))
     updates["input_text"] = out_messages
+    updates["query_proposed"] = proposed
     
     return updates
 
+
+def latest_question(state) -> str:
+    for msg in reversed(state.input_text):
+        if isinstance(msg, HumanMessage):
+            return msg.content
+    return ""
 
 def approval_node(state: UserInput):
 
@@ -206,7 +215,7 @@ def execute_node(state: UserInput) ->str:
     return {"query_result": res}
 
 def answer_node(state: UserInput) -> dict:
-    question = state.input_text[0].content          # the original question
+    question = latest_question(state)         # the original question
     prompt = [
         SystemMessage(content=(
             "You are a data analyst presenting findings to a non-technical stakeholder. "
@@ -242,7 +251,7 @@ def llm_router(state: UserInput) -> str:
 def tools_router(state: UserInput) -> str:
     """If a final query has been proposed, we're done exploring -> stop here
     (for now). Otherwise loop back to keep exploring."""
-    return "approval_node" if state.proposed_sql else "llm_node"
+    return "approval_node" if state.query_proposed else "llm_node"
 
 def approval_router(state: UserInput):
 
