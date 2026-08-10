@@ -13,3 +13,4 @@ agents/__pycache__
 .venv
 .env
 .python-version
+/charts/

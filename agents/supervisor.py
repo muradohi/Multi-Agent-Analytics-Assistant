@@ -76,7 +76,7 @@ SYSTEM = SystemMessage(content="""
     - route
     - a one-sentence reason
     """)
-def sup_node(state: UserInput):
+def sup_node(state: SupervisorState):
     system_msg = SYSTEM
 
     user_msg = state.input_text
