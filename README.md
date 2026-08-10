@@ -41,6 +41,10 @@ Built with LangGraph, with an interactive Streamlit chat UI.
   re-running the analysis.
 - **Runs safely.** SQL execution is read-only (SELECT only), and model-generated
   pandas code runs in a scoped, sandboxed namespace.
+  - **Self-correcting.** When a generated query or analysis fails, the error is fed
+  back to the agent so it can fix its own code and retry — rather than dead-ending.
+- **Observable & tested.** Every run logs its route, latency, token count, and cost;
+  an eval suite checks routing accuracy so changes can't silently break behavior.
 
 ---
 
