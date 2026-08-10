@@ -199,8 +199,8 @@ def execute_node(state: UserInput) ->str:
 
     if not sql:
         return {"query_result": "ERROR: no query was recorded to execute."}
-    if not sql.lower().startswith("select"):
-        return {"query_result": "Rejected: only SELECT queries are allowed."}
+    if not sql.lower().startswith() in ['select', "with"]:
+        return {"query_result": "Rejected: only SELECT or WITH queries are allowed."}
 
     try:
 
