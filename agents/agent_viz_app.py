@@ -202,12 +202,12 @@ def execute_chart_node(state: VizState) -> dict:
     
 def data_summary_node(state: VizState) -> dict:
     df = load_df(state.fetch_sql)
-    summary = (
-    f"Rows: {len(df)}, Columns: {list(df.columns)}\n"
-    f"Sample:\n{df.head(3).to_string()}\n"
-    f"Numeric summary:\n{df.describe().to_string()}"
-)
-    return {"data_summary": summary}
+    if len(df) <= 25:
+        table = df.to_string(index=False)          # rankings: show all rows
+    else:
+        table = (f"{df.head(10).to_string(index=False)}\n... ({len(df)} rows)\n"
+                 f"{df.describe().to_string()}")
+    return {"data_summary": f"Columns: {list(df.columns)}\n{table}"}
     
     
 def return_node(state: VizState) -> dict:
