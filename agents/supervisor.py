@@ -47,31 +47,27 @@ SYSTEM = SystemMessage(content="""
     Always base your decision on the user's LATEST question.
 
     Before choosing a route, first determine whether the latest question can be answered completely from the current conversation history.
-
-    Routing priority:
-
-    1. MEMORY
-    If the answer has already been computed or explicitly stated earlier in the current conversation, return route="direct".
+    If the answer has already been computed or explicitly stated earlier in the current conversation,
     Do not query the database again.
-
-    Only choose this route if the previous answer fully answers the user's latest question.
     If the required information is missing, incomplete, or only partially related, continue to the routing rules below.
-
-    2. SQL
+    
+    routing:
+    
+    1. SQL
     If answering requires retrieving new data from the SQLite database using SQL
     (counts, sums, averages, joins, filters, rankings, group-bys, simple distributions, etc.),
     return route="sql".
 
-    3. PANDAS
+    2. PANDAS
     If SQL results require additional statistical analysis
     (correlation, regression, variance, standard deviation, quantiles, hypothesis tests, etc.),
     return route="pandas".
 
-    4. VIZ
+    3. viz
     If the user requests a chart, plot, graph, draw, or visualization,
     return route="viz".
 
-    5. DIRECT
+    4. direct
     If the question requires no database access
     (definitions, explanations, capabilities, greetings, or other general knowledge),
     return route="direct".
@@ -85,6 +81,7 @@ def sup_node(state: UserInput):
 
     user_msg = state.input_text
     prompt = [system_msg] + user_msg
+
     
     llm_response = llm_with_schema.invoke(prompt)
 
@@ -113,34 +110,6 @@ def direct_node(state: SupervisorState):
 
     return {"input_text": ai_msg}
 
-
-
-def approval_node(state: SupervisorState):
-
-    decision = interrupt({
-        "proposed_sql": state.proposed_sql,
-        "instruction": "action: approve / reject / revise (+notes)"
-    })
-
-    action = decision["action"]
-
-    if action == "revise":
-        notes = decision.get("notes","")
-
-        return {
-                    "input_text": [HumanMessage(content=(
-                        f"The reviewer requested changes: {notes}. "
-                        f"Revise your SQL and call propose_final_query again with the corrected query. "
-                        f"Do NOT answer in prose — you must call propose_final_query."
-                    ))],
-                    "proposed_sql": "",
-                    "query_result": "revise",
-            }
-
-    elif action == "reject":
-        return {"query_result": "rejected"}
-
-    return {"query_result": "approved"}
     
 
 
@@ -167,7 +136,6 @@ graph.add_node("sql_node", sql_agent)
 graph.add_node("pandas_node", pandas_agent)
 graph.add_node("viz_node", viz_agent)
 graph.add_node("direct_node", direct_node)
-graph.add_node("approval_node", approval_node)
 
 graph.add_edge(START, "sup_node")
 graph.add_conditional_edges("sup_node", conditional_edge,{"sql_route":"sql_node", "pandas_route":"pandas_node", "viz_route": "viz_node", "direct_route": "direct_node"})
@@ -184,7 +152,7 @@ checkpointer = InMemorySaver()
 sup_graph = graph.compile(checkpointer= checkpointer)
 
 def run_supervisor(question: str, thread_id: str=  "sup-1"):
-    breakpoint()
+
     sup_config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 35}
     result = sup_graph.invoke(
         {"input_text": [HumanMessage(content=question)]}, sup_config

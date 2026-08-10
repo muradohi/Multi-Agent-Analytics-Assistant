@@ -175,7 +175,7 @@ def approval_node(state: VizState) -> dict:
         notes = decision.get("notes", "")
         return {
             "input_text": [HumanMessage(content=(
-                f"Revise the chart. Feedback: {notes}. Call propose_chart_code "
+                f"Revise the chart. Feedback: {notes}, and the code you wrote {state.chart_code}, Call propose_chart_code "
                 f"again with corrected code. Do NOT answer in prose."))],
             "chart_code": "",
             "action": "revise",

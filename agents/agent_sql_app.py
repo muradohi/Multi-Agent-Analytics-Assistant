@@ -101,7 +101,9 @@ SYSTEM = SystemMessage(content=(
     "'::type' casts (e.g. ::numeric) or Postgres-only functions. "
     "For rounding use ROUND(expr, 2) directly — no casts. "
     "Workflow: call list_tables, then schema_tables on the relevant tables, "
-    "then call propose_final_query with a single MySQL SELECT. "
+    "Never assume table or column names."
+    "Only use tables and columns returned by list_tables and schema_tables."
+    "then call propose_final_query. "
     "Category names are Portuguese."
 ))
 
@@ -176,10 +178,8 @@ def approval_node(state: UserInput):
 
         return {
             "input_text": [HumanMessage(content=(
-                f"The reviewer requested changes: {notes}. "
-                f"Revise your SQL and call propose_final_query again with the corrected query. "
-                f"Do NOT answer in prose — you must call propose_final_query."
-            ))],
+            f"The reviewer requested changes: {notes} and the query you wrote {state.proposed_sql}. "
+        ))],
             "proposed_sql": "",
             "query_result": "revise",
     }
@@ -197,8 +197,10 @@ def execute_node(state: UserInput) ->str:
 
     sql = state.proposed_sql
 
-    if not sql.strip().lower().startswith("select"):
-        print(f"ERROR : only select queries are allowed. Do not modify the data.")
+    if not sql:
+        return {"query_result": "ERROR: no query was recorded to execute."}
+    if not sql.lower().startswith("select"):
+        return {"query_result": "Rejected: only SELECT queries are allowed."}
 
     try:
 
@@ -244,9 +246,15 @@ def answer_node(state: UserInput) -> dict:
 
 #routing decision and the graph
 
-def llm_router(state: UserInput) -> str:
-    """If the LLM asked for tools, run them; otherwise we're done."""
-    return "tool_node" if state.input_text[-1].tool_calls else "end"
+def llm_router(state):
+    last = state.input_text[-1]
+
+    if getattr(last, "tool_calls", None):
+        return "tool_node"
+
+    raise RuntimeError(
+        "LLM did not call propose_final_query."
+    )
 
 def tools_router(state: UserInput) -> str:
     """If a final query has been proposed, we're done exploring -> stop here
@@ -254,6 +262,8 @@ def tools_router(state: UserInput) -> str:
     return "approval_node" if state.query_proposed else "llm_node"
 
 def approval_router(state: UserInput):
+    """Revise your SQL and call propose_final_query again.
+        Do NOT answer in prose."""
 
     qr = state.query_result
     if qr == "revise":   return "llm_node"
@@ -275,7 +285,7 @@ graph.add_node("answer_node", answer_node)
 
 graph.add_edge(START, "llm_node")
 graph.add_conditional_edges("llm_node", llm_router,{
-    "tool_node": "tool_node", "end": END
+    "tool_node": "tool_node", "approval_node": "approval_node", "llm_node": "llm_node"
 })
 # graph.add_edge("llm_node", "tool_node")
 graph.add_conditional_edges( "tool_node", tools_router, {"approval_node": "approval_node", "llm_node": "llm_node"})

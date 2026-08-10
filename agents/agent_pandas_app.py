@@ -30,7 +30,8 @@ class PandasState(BaseModel):
     input_text: Annotated[list[AnyMessage], add_messages]
 
     fetch_sql: str = ""
-    query_proposed_pandas: bool = False
+    code_proposed_pandas: bool = False
+    query_proposed_sql: bool = False
     qa_report: str = ""
     proposed_code: str = ""
     code_result: str = ""
@@ -54,6 +55,8 @@ SYSTEM = SystemMessage(content=(
     "You are a data analyst preparing to analyze e-commerce data with pandas. "
     "First inspect the schema (list_tables, schema_tables). Then call "
     "propose_fetch_sql with a SELECT pulling ONLY the needed columns. "
+    "Never assume table or column names."
+    "Only use tables and columns returned by list_tables and schema_tables."
     "Write SQLite-compatible SQL. Category names are Portuguese."
 ))
 
@@ -75,9 +78,10 @@ def current_turn_messages(state):
     return msgs[last_human:]
 
 def fetch_llm_node(state: PandasState) -> dict:
+
     msg = current_turn_messages(state)
     response = llm_with_tools.invoke([SYSTEM, *msg])
-    return {"input_text": [response], "query_proposed_pandas": False, "fetch_sql": ""}
+    return {"input_text": [response], "query_proposed_sql": False, "fetch_sql": ""}
 
 
 def fetch_tool_node(state: PandasState) -> dict:
@@ -101,7 +105,7 @@ def fetch_tool_node(state: PandasState) -> dict:
             out.append(ToolMessage(content=str(res), tool_call_id=call["id"]))
 
     updates["input_text"] = out
-    updates["query_proposed_pandas"] = proposed
+    updates["query_proposed_sql"] = proposed
     return updates
 
 
@@ -166,8 +170,9 @@ def data_quality_node(state: PandasState) -> dict:
 
 @tool
 def propose_analysis_code(code: str) -> str:
-    """Propose pandas code answering the question. `df` holds the data; `pd`,`np`
-    available. Assign the final answer to `result`. Call ONCE; not run yet."""
+    """Propose pandas code to answer the question. `df` holds the data; `pd`, `np`
+    are available. Assign the final answer to a variable named `result`.
+    Call this ONCE with your complete code."""
     return "Analysis code recorded."
 
 analysis_tools = [propose_analysis_code]
@@ -176,9 +181,10 @@ llm_with_analysis_tools = llm.bind_tools(analysis_tools)
 
 def propose_analysis_node(state: PandasState) -> dict:
     system = SystemMessage(content=(
-        "Write pandas code to answer the question. Data is in `df`; `pd`,`np` available. "
+        "Write pandas code to answer the question. Data is in `df`; `pd`, `np` available. "
         "Assign the answer to a variable `result`. Account for issues in the quality "
-        "report (drop nulls before correlating, etc). Call propose_analysis_code once.\n\n"
+        "report (drop nulls before correlating, etc).\n\n"
+        "Call the propose_analysis_code TOOL with your code."
         f"Question: {latest_question(state)}\n"
         f"Fetch SQL: {state.fetch_sql}\n"
         f"Data-quality report:\n{state.qa_report}"
@@ -214,9 +220,7 @@ def approval_node(state: PandasState) -> dict:
         notes = decision.get("notes", "")
         return {
             "input_text": [HumanMessage(content=(
-                f"Revise the analysis. Feedback: {notes}. "
-                f"Call propose_analysis_code again with corrected code. "
-                f"Do NOT answer in prose."
+                f"Revise the analysis. Feedback: {notes}, and the code you wrote {state.proposed_code} "
             ))],
             "proposed_code": "",
             "action": "revise",
@@ -283,7 +287,7 @@ def after_fetch_llm(state):
 
 
 def after_fetch_tools(state):
-    return "data_quality" if state.query_proposed_pandas else "fetch_llm"
+    return "data_quality" if state.query_proposed_sql else "fetch_llm"
 
 
 def after_propose(state):
