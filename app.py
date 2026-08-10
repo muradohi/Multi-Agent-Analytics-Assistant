@@ -1,13 +1,3 @@
-"""
-app.py — chat-native UI for the MULTI-AGENT supervisor.
-
-Ask a question → the supervisor routes it to the SQL, Pandas, Viz, or Direct
-agent → for SQL/Pandas/Viz you review the proposed query/code → it runs and answers.
-
-Run from the PROJECT ROOT:
-    streamlit run app.py
-"""
-
 import os
 import shutil
 import time
@@ -25,10 +15,6 @@ from agents import sup_graph, engine
 # ---------------------------------------------------------------------------
 st.set_page_config(page_title="Olist Analytics", page_icon="🧭", layout="wide")
 
-# ---------------------------------------------------------------------------
-# AGENTS — one accent colour each. This is the design's backbone: the colour
-# tells you which specialist answered, on the pill and on the answer.
-# ---------------------------------------------------------------------------
 AGENT = {
     "sql":    {"label": "SQL",     "icon": "🗃️", "color": "#4C9AFF"},
     "pandas": {"label": "Pandas",  "icon": "🐼", "color": "#F2A93B"},
@@ -36,9 +22,6 @@ AGENT = {
     "direct": {"label": "Direct",  "icon": "💬", "color": "#B392F0"},
 }
 
-# ---------------------------------------------------------------------------
-# STYLING — indigo-slate base, Inter for UI, JetBrains Mono for code.
-# ---------------------------------------------------------------------------
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -104,7 +87,7 @@ EXAMPLES = [
 # ---------------------------------------------------------------------------
 def init_state():
     defaults = {
-        "phase": "idle",              # idle -> awaiting_approval -> revising -> done/viewing
+        "phase": "idle",
         "thread_id": "ui-conv-1",
         "question": "",
         "route": "",
@@ -116,15 +99,14 @@ def init_state():
         "current_conv_id": "conv-1",
         "pending_prompt": None,
         "debug": False,
+        "last_debug": None,
     }
     for k, v in defaults.items():
         st.session_state.setdefault(k, v)
 
 init_state()
 
-# ---------------------------------------------------------------------------
-# HELPERS
-# ---------------------------------------------------------------------------
+
 def cfg():
     return {"configurable": {"thread_id": st.session_state.thread_id},
             "recursion_limit": 35}
@@ -144,8 +126,15 @@ def run_sql_preview(sql: str):
 
 def final_answer(result) -> str:
     for msg in reversed(result.get("input_text", [])):
-        if getattr(msg, "content", ""):
-            return msg.content
+        content = getattr(msg, "content", "") or ""
+        if not content:
+            continue
+        s = content.lstrip()
+        # skip the model's raw tool-call / code echoes — not real answers
+        if s.startswith(("propose_final_query", "propose_analysis_code",
+                         "propose_chart_code", "result =", "result=", "{")):
+            continue
+        return content
     return "_(no answer returned)_"
 
 def pill(route: str) -> str:
@@ -214,33 +203,28 @@ def process(result, skipped=False):
         save_turn()
         
 def show_debug(result, stage: str):
-    """Narrate one graph step so the flow is visible: what came back, where it went."""
     if not st.session_state.get("debug"):
         return
-    with st.expander(f"🔍 debug — {stage}", expanded=True):
-        interrupted = "__interrupt__" in result
-        st.markdown(
-            f"- **destination:** `{result.get('destination')}`  \n"
-            f"- **paused for review?** `{interrupted}`  \n"
-            f"- **phase now:** `{st.session_state.phase}`  \n"
-            f"- **state keys:** `{list(result.keys())}`"
-        )
-        if interrupted:
-            payload = result["__interrupt__"][0].value
-            st.caption("interrupt payload (what the agent sent up for approval):")
-            st.json(payload)
-        # the running message history — the heart of the flow
-        msgs = result.get("input_text", [])
-        st.caption(f"message history ({len(msgs)} messages):")
-        for m in msgs:
-            kind = type(m).__name__                       # HumanMessage / AIMessage / ToolMessage
-            tool_calls = getattr(m, "tool_calls", None)
-            if tool_calls:
-                calls = ", ".join(c["name"] for c in tool_calls)
-                st.markdown(f"`{kind}` → 🔧 calls: **{calls}**")
-            else:
-                content = (getattr(m, "content", "") or "")[:200]
-                st.markdown(f"`{kind}` → {content or '_(empty)_'}")
+    interrupted = "__interrupt__" in result
+    msgs = result.get("input_text", [])
+    lines = []
+    for m in msgs:
+        kind = type(m).__name__
+        tc = getattr(m, "tool_calls", None)
+        if tc:
+            lines.append(f"`{kind}` → 🔧 {', '.join(c['name'] for c in tc)}")
+        else:
+            content = (getattr(m, "content", "") or "")[:200]
+            lines.append(f"`{kind}` → {content or '_(empty)_'}")
+    st.session_state.last_debug = {
+        "stage": stage,
+        "destination": result.get("destination"),
+        "interrupted": interrupted,
+        "phase": st.session_state.phase,
+        "keys": list(result.keys()),
+        "payload": result["__interrupt__"][0].value if interrupted else None,
+        "messages": lines,
+    }
 
 def ask(prompt: str):
     st.session_state.question = prompt
@@ -255,9 +239,7 @@ def ask(prompt: str):
 def artifact_lang() -> str:
     return "python" if st.session_state.route in ("pandas", "viz") else "sql"
 
-# ---------------------------------------------------------------------------
-# SIDEBAR
-# ---------------------------------------------------------------------------
+
 with st.sidebar:
     st.markdown("### 🧭 Olist Analytics")
     st.markdown(f"- **thread_id:** `{st.session_state.thread_id}`")
@@ -291,12 +273,10 @@ with st.sidebar:
             st.dataframe(pd.DataFrame(columns, columns=["column", "type"]),
                          hide_index=True, use_container_width=True)
 
-# ---------------------------------------------------------------------------
-# MAIN — transcript, then the live phase, then the input.
-# ---------------------------------------------------------------------------
+
 current = st.session_state.conversations[st.session_state.current_conv_id]
 
-# ---- empty state -----------------------------------------------------------
+
 if not current["messages"] and st.session_state.phase in ("idle", "viewing"):
     st.markdown(
         '<div class="hero"><h2>Ask anything about the Olist data</h2>'
@@ -310,7 +290,6 @@ if not current["messages"] and st.session_state.phase in ("idle", "viewing"):
             st.session_state.pending_prompt = ex
             st.rerun()
 
-# ---- transcript of completed turns ----------------------------------------
 for msg in current["messages"]:
     with st.chat_message("user"):
         st.markdown(msg["q"])
@@ -324,7 +303,7 @@ for msg in current["messages"]:
             with st.expander(f"View {'code' if lang == 'python' else 'SQL'}"):
                 st.code(msg["artifact"], language=lang)
 
-# ---- live turn: an approval or revise in progress -------------------------
+
 if st.session_state.phase in ("awaiting_approval", "revising"):
     with st.chat_message("user"):
         st.markdown(st.session_state.question)
@@ -338,7 +317,7 @@ if st.session_state.phase in ("awaiting_approval", "revising"):
 
         payload = st.session_state.interrupt_payload
 
-        # ----- approval card ------------------------------------------------
+       
         if st.session_state.phase == "awaiting_approval":
             if "proposed_sql" in payload:
                 st.session_state.artifact = payload["proposed_sql"]
@@ -378,6 +357,7 @@ if st.session_state.phase in ("awaiting_approval", "revising"):
                 show_debug(result, "after approve") 
                 st.rerun()
             if c2.button("✏️ Revise", use_container_width=True):
+                
                 st.session_state.phase = "revising"
                 st.rerun()
             if c3.button("⏭️ Skip", use_container_width=True):
@@ -386,7 +366,6 @@ if st.session_state.phase in ("awaiting_approval", "revising"):
                 show_debug(result, "after skip") 
                 st.rerun()
 
-        # ----- revise form --------------------------------------------------
         else:
             st.markdown("**Revise the plan** — tell the agent what to change")
             st.code(st.session_state.artifact, language=artifact_lang())
@@ -399,14 +378,12 @@ if st.session_state.phase in ("awaiting_approval", "revising"):
             if send and notes:
                 with st.spinner("Revising…"):
                     result = sup_graph.invoke(
-                        Command(resume={"action": "revise", "notes": notes}), cfg())
+                        Command(resume={"action": "revise", "notes": notes}), cfg()
+                    )
                 process(result)
                 show_debug(result, "after revise")
                 st.rerun()
 
-# ---------------------------------------------------------------------------
-# INPUT — always present; disabled while a review is open.
-# ---------------------------------------------------------------------------
 busy = st.session_state.phase in ("awaiting_approval", "revising")
 typed = st.chat_input(
     "Finish the review above first…" if busy else "Ask about the Olist data…",
@@ -415,6 +392,23 @@ typed = st.chat_input(
 
 prompt = typed or st.session_state.pending_prompt
 st.session_state.pending_prompt = None
-if prompt and not busy:
+if prompt and st.session_state.phase in ("idle", "done", "viewing"):
     ask(prompt)
     st.rerun()
+    
+
+if st.session_state.debug and st.session_state.get("last_debug"):
+    d = st.session_state.last_debug
+    with st.expander(f"🔍 debug — {d['stage']}", expanded=True):
+        st.markdown(
+            f"- **destination:** `{d['destination']}`  \n"
+            f"- **paused for review?** `{d['interrupted']}`  \n"
+            f"- **phase now:** `{d['phase']}`  \n"
+            f"- **state keys:** `{d['keys']}`"
+        )
+        if d["payload"]:
+            st.caption("interrupt payload:")
+            st.json(d["payload"])
+        st.caption(f"message history ({len(d['messages'])} messages):")
+        for line in d["messages"]:
+            st.markdown(line)
