@@ -14,3 +14,4 @@ agents/__pycache__
 .env
 .python-version
 /charts/
+.devcontainer

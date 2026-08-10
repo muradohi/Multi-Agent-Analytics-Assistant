@@ -181,10 +181,18 @@ llm_with_analysis_tools = llm.bind_tools(analysis_tools)
 
 def propose_analysis_node(state: PandasState) -> dict:
     system = SystemMessage(content=(
-        "Write pandas code to answer the question. Data is in `df`; `pd`, `np` available. "
-        "Assign the answer to a variable `result`. Account for issues in the quality "
-        "report (drop nulls before correlating, etc).\n\n"
-        "Call the propose_analysis_code TOOL with your code."
+        "Write pandas code to answer the user's question. `df` holds the data; "
+        "`pd`, `np` are available. Assign the final answer to a variable `result`.\n\n"
+        "Call the propose_analysis_code TOOL with your code.\n\n"
+        "PRINCIPLES:\n"
+        "- Compute the MINIMUM needed to answer the question directly. Do not compute "
+        "every possible metric.\n"
+        "- Prefer ONE clear, interpretable comparison (e.g. group means, an on-time "
+        "vs late split, a simple correlation) over many variants of the same thing.\n"
+        "- Account for the data-quality report (drop nulls, handle duplicates/outliers) "
+        "but don't turn every cleaning choice into a separate reported number.\n"
+        "- `result` should be a SMALL dict holding only the few numbers that answer "
+        "the question — not a dump of everything you calculated.\n\n"
         f"Question: {latest_question(state)}\n"
         f"Fetch SQL: {state.fetch_sql}\n"
         f"Data-quality report:\n{state.qa_report}"
@@ -267,9 +275,25 @@ def execute_node(state: PandasState) -> dict:
 def answer_node(state: PandasState) -> dict:
     prompt = [
         SystemMessage(content=(
-            "Answer the question using ONLY the analysis result. Be concise, lead "
-            "with the answer, use plain numbers. Note relevant data-quality caveats."
-        )),
+        "You are explaining a data result to a non-technical manager. Answer the "
+        "question directly and clearly using ONLY the computed results.\n\n"
+        "RULES:\n"
+        "- Lead with a direct answer to the exact question (yes / no / it depends), "
+        "in one sentence.\n"
+        "- Then give 2-3 short supporting points — the numbers that actually answer "
+        "the question, not every metric computed.\n"
+        "- Translate correlations into plain words: |r| under 0.1 = negligible, "
+        "0.1-0.3 = weak, 0.3-0.5 = moderate, above 0.5 = strong. Say 'a moderate "
+        "relationship', not 'Pearson = -0.33'.\n"
+        "- Prefer concrete comparisons a person feels (e.g. 'on-time orders averaged "
+        "4.3 stars vs 2.6 for late ones') over abstract coefficients.\n"
+        "- Use plain names ('delivery time', not 'delivery_days'). Round hard "
+        "('about 4.3 stars', not '4.2926').\n"
+        "- If an effect shrinks after removing outliers, explain what that means in "
+        "words (the link is real but modest) — don't just report both numbers.\n"
+        "- Keep it under ~120 words. No variable names, no raw dicts, no lists of "
+        "every coefficient."
+    )),
         HumanMessage(content=(
             f"Question: {latest_question(state)}\n"
             f"Data-quality: {state.qa_report}\n"

@@ -1,12 +1,15 @@
 import os
 import shutil
 import time
+from datetime import datetime
+import json
 
 import streamlit as st
 import pandas as pd
 from sqlalchemy import text, inspect
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
+from langchain_community.callbacks import get_openai_callback
 
 from agents import sup_graph, engine
 
@@ -18,7 +21,7 @@ st.set_page_config(page_title="Olist Analytics", page_icon="🧭", layout="wide"
 AGENT = {
     "sql":    {"label": "SQL",     "icon": "🗃️", "color": "#4C9AFF"},
     "pandas": {"label": "Pandas",  "icon": "🐼", "color": "#F2A93B"},
-    "viz":    {"label": "Charts",  "icon": "📊", "color": "#33C4A8"},
+    "viz":    {"label": "Charts",  "icon": "📊", "color": "#336D62"},
     "direct": {"label": "Direct",  "icon": "💬", "color": "#B392F0"},
 }
 
@@ -225,15 +228,36 @@ def show_debug(result, stage: str):
         "payload": result["__interrupt__"][0].value if interrupted else None,
         "messages": lines,
     }
+    
+def log_run(question, result, duration, cb):
+    row = {
+        "ts": datetime.now().isoformat(),
+        "thread_id": st.session_state.thread_id,
+        "question": question,
+        "route": result.get("destination"),
+        "interrupted": "__interrupt__" in result,
+        "duration_s": round(duration, 2),
+        "total_tokens": cb.total_tokens,
+        "prompt_tokens": cb.prompt_tokens,
+        "completion_tokens": cb.completion_tokens,
+        "n_llm_calls": cb.successful_requests,
+        "cost_usd": round(cb.total_cost, 4),
+    }
+    with open("runs.jsonl", "a") as f:
+        f.write(json.dumps(row) + "\n")
 
 def ask(prompt: str):
     st.session_state.question = prompt
     for k in ("route", "reasoning", "artifact", "answer"):
         st.session_state[k] = ""
     st.session_state.interrupt_payload = {}
+    t0 = time.time()
     with st.spinner("Routing your question…"):
-        result = sup_graph.invoke({"input_text": [HumanMessage(content=prompt)]}, cfg())
+        with get_openai_callback() as cb:
+            result = sup_graph.invoke({"input_text": [HumanMessage(content=prompt)]}, cfg())
+    duration = time.time() - t0
     process(result)
+    log_run(prompt, result, duration, cb)
     show_debug(result, "after ask") 
 
 def artifact_lang() -> str:
