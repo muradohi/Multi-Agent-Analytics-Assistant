@@ -214,10 +214,19 @@ def return_node(state: VizState) -> dict:
     if state.chart_path.startswith("error"):
         msg = f"Chart failed: {state.chart_path}"
     else:
-        msg = (
-            f"Chart saved to {state.chart_path}\n\n"
-            f"**Data behind the chart:**\n{state.data_summary}"
-        )
+        system = SystemMessage(content=(
+            "You are describing a chart to a stakeholder. In ONE sentence, state "
+            "what the chart shows and the single most notable takeaway (the top "
+            "item, the trend, the outlier). Then present the underlying data as a "
+            "short clean list. Round numbers, use plain names. No 'chart saved' "
+            "boilerplate, no offers to do more."
+        ))
+        human = HumanMessage(content=(
+            f"Question: {latest_question(state)}\n\n"
+            f"Data behind the chart:\n{state.data_summary}"
+        ))
+        takeaway = llm.invoke([system, human]).content
+        msg = takeaway
     return {"input_text": [AIMessage(content=msg)]}
 
 
