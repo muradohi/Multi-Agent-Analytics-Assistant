@@ -128,6 +128,11 @@ def propose_chart_node(state: VizState) -> dict:
     system = SystemMessage(content=(
         "Write matplotlib code to chart the data and answer the question. "
         "The DataFrame is in `df`; pd, np, plt available. "
+        "Use only standard matplotlib. For styling, pass color and linestyle "
+        "separately (e.g. plt.plot(x, y, color='black', linestyle='--')) OR use a "
+        "format string as a positional arg (plt.plot(x, y, 'k--')) — never put a "
+        "format string like 'k--' inside ls= or linestyle=. Save with "
+        "plt.savefig('chart_output.png', bbox_inches='tight'), then plt.close()."
         "Save the figure to 'chart_output.png'. Pick an appropriate chart type.\n\n"
         f"Question: {latest_question(state)}\n"
         f"Data available (use these exact column names):\n{state.data_summary}"
