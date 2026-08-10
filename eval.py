@@ -1,27 +1,30 @@
 # eval.py
-from agents import sup_graph
+from agents import sup_graph, pandas_agent, AnalysisPlan
 from langchain_core.messages import HumanMessage
+import json
 
 # your test set: question -> which agent SHOULD handle it
 CASES = [
-    ("How many orders were cancelled?",                          "sql"),
-    ("What are the top 5 categories by number of orders?",       "sql"),
-    ("Is there a correlation between price and review score?",   "pandas"),
-    ("Plot the top 3 categories by number of orders",           "viz"),
-    ("What can you do?",                                          "direct"),
+    ("Is there a correlation between price and review score?", "correlation"),
+    ("What's the distribution of review scores?", "distribution"),
+    ("What is the total revenue?", "aggregate"),
+    ("Which states generate the most revenue?", "ranking"),
+    ("Do late orders have lower review scores?", "comparison"),
+    ("How has revenue changed over time?", "trend"),
 ]
 
 def run_evals():
     passed = 0
-    for question, expected_route in CASES:
+    for question, expected_intent in CASES:
         cfg = {"configurable": {"thread_id": f"eval-{hash(question)}"},
                "recursion_limit": 35}
-        result = sup_graph.invoke({"input_text": [HumanMessage(content=question)]}, cfg)
-        actual = result.get("destination")
-        ok = actual == expected_route
+        result = pandas_agent.invoke({"input_text": [HumanMessage(content=question)]}, cfg)
+        plan = result.get("plan")
+        actual = plan.intent if plan else None
+        ok = actual == expected_intent
         passed += ok
         mark = "✅" if ok else "❌"
-        print(f"{mark} [{actual or 'None':>7}] expected [{expected_route:>7}]  {question}")
+        print(f"{mark} [{actual or 'None':>7}] expected [{expected_intent:>7}]  {question}")
     print(f"\n{passed}/{len(CASES)} routing cases passed")
 
 if __name__ == "__main__":

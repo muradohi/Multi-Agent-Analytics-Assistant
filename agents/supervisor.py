@@ -35,7 +35,8 @@ class Route(BaseModel):
     destination: Literal["sql", "pandas", "viz", "direct"]
     reasoning : str
 
-class SupervisorState(UserInput, PandasState, VizState):
+class SupervisorState(BaseModel):
+    input_text: Annotated[list[AnyMessage], add_messages]
     destination: str = ""
     reasoning: str = ""
 

@@ -2,8 +2,9 @@ import os, io, contextlib
 from typing import Annotated
 
 from dotenv import load_dotenv
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import text
+from typing import List, Annotated, Literal
 import pandas as pd
 import scipy
 import numpy as np
@@ -18,16 +19,41 @@ from langgraph.types import interrupt, Command
 import matplotlib.pyplot as plt
 import plotly
 import seaborn as sns
+from functools import lru_cache
+from sqlalchemy import inspect
 
 from agents.agent_sql_app import engine, llm, list_tables, schema_tables
 
 load_dotenv()
 
+@lru_cache(maxsize=1)
+def get_schema_string() -> str:
+    insp = inspect(engine)
+    lines = []
+    for t in insp.get_table_names():
+        cols = ", ".join(f"{c['name']} ({c['type']})" for c in insp.get_columns(t))
+        lines.append(f"{t}: {cols}")
+    return "\n".join(lines)
 
+#planner
+class AnalysisPlan(BaseModel):
+    intent: Literal[
+    "aggregate", "comparison", "correlation",
+    "distribution", "trend", "ranking", "exploratory"
+] = Field(..., description="The kind of analysis. Use 'exploratory' ONLY when the "
+          "question is too open-ended to fit the others (e.g. 'find unusual patterns').")
+    metrics: list[str] = Field(default_factory=list, description="Numeric columns to measure, e.g. ['review_score']")
+    grain: str = Field("", description="What one row represents: order, order_item, customer")
+    dimensions: list[str] = Field(default_factory=list, description="What to break down / compare by, e.g. ['delivery_time']")
+    filters: list[str] = Field(default_factory=list, description="Conditions to apply, e.g. ['order_status = delivered']")
+    comparison: str = Field("", description="If intent is comparison, the two groups, e.g. 'on-time vs late'")
+    
 
 class PandasState(BaseModel):
 
     input_text: Annotated[list[AnyMessage], add_messages]
+    
+    plan:  AnalysisPlan | None = None
 
     fetch_sql: str = ""
     code_proposed_pandas: bool = False
@@ -51,14 +77,53 @@ tools = [list_tables, schema_tables, propose_fetch_sql]
 llm_with_tools = llm.bind_tools(tools)
 
 
-SYSTEM = SystemMessage(content=(
-    "You are a data analyst preparing to analyze e-commerce data with pandas. "
-    "First inspect the schema (list_tables, schema_tables). Then call "
-    "propose_fetch_sql with a SELECT pulling ONLY the needed columns. "
-    "Never assume table or column names."
-    "Only use tables and columns returned by list_tables and schema_tables."
-    "Write SQLite-compatible SQL. Category names are Portuguese."
-))
+llm_planner = llm.with_structured_output(AnalysisPlan)
+def analysis_plan_node(state: PandasState) -> dict:
+    system = SystemMessage(content=(
+        "You are planning a data analysis. Read the user's question and produce a "
+        "structured plan describing WHAT to analyze, not how.\n\n"
+
+        "Choose exactly one intent:\n"
+        "- aggregate: a total, count, sum, average, minimum, or maximum.\n"
+        "- comparison: compare a metric between two or more explicitly defined groups.\n"
+        "- correlation: relationship between two numeric variables.\n"
+        "- distribution: distribution or spread of a numeric/categorical variable.\n"
+        "- trend: how a metric changes over time or another ordered dimension.\n"
+        "- ranking: top/bottom entities according to a metric.\n"
+        "- exploratory: the question is open-ended and asks to discover patterns, "
+        "anomalies, unusual behavior, or insights without specifying one exact analysis.\n\n"
+
+        "For exploratory questions:\n"
+        "- Do NOT leave the plan empty.\n"
+        "- Choose a useful grain based on the question.\n"
+        "- Identify relevant metrics that would help investigate the question, "
+        "even when the user did not explicitly name them.\n"
+        "- Identify relevant dimensions that could reveal patterns.\n"
+        "- For purchasing behavior, useful metrics may include total spend, "
+        "order count, average order value, item count, purchase frequency, "
+        "and relevant product/category dimensions.\n\n"
+
+        "- metrics: the numeric column(s) needed for the analysis.\n"
+        "- grain: what one row represents (order, order_item, customer, etc.).\n"
+        "- dimensions: what to break down or investigate by.\n"
+        "- filters: conditions to apply.\n"
+        "- comparison: only for comparison intent.\n\n"
+        
+        f"SCHEMA:\n{get_schema_string()}\n\n"
+        "metrics, dimensions, grain must reference REAL columns from this schema. "
+        "Do NOT invent derived names like 'total_spend_per_customer' — those are "
+        "computed later in analysis, not named here.\n\n"
+
+        "Plan for THIS question only. Keep it minimal, but for exploratory "
+        "questions include enough information to investigate the requested pattern."
+    ))
+
+    human = HumanMessage(content=latest_question(state))
+    plan = llm_planner.invoke([system, human])
+
+    return {"plan": plan}
+
+
 
 def latest_question(state) -> str:
     for msg in reversed(state.input_text):
@@ -78,10 +143,53 @@ def current_turn_messages(state):
     return msgs[last_human:]
 
 def fetch_llm_node(state: PandasState) -> dict:
+    plan = state.plan if state.plan else None
 
-    msg = current_turn_messages(state)
-    response = llm_with_tools.invoke([SYSTEM, *msg])
-    return {"input_text": [response], "query_proposed_sql": False, "fetch_sql": ""}
+    plan_block = ""
+    if plan:
+        plan_block = (
+            "\n\nANALYSIS PLAN (fetch only what this needs):\n"
+            f"- metrics: {plan.metrics}\n"
+            f"- grain: {plan.grain}\n"
+            f"- dimensions: {plan.dimensions}\n"
+            f"- filters: {plan.filters}\n"
+        )
+
+    system = SystemMessage(content=(
+    "You are a data analyst preparing to fetch data for analysis with pandas.\n\n"
+
+    "First inspect the schema with list_tables and schema_tables. "
+    "Then call propose_fetch_sql with a SELECT that retrieves the data "
+    "required by the analysis plan.\n\n"
+
+    "GENERAL RULES:\n"
+    "- Pull ONLY columns needed for the plan.\n"
+    "- Never use SELECT *.\n"
+    "- Use SQLite-compatible SQL.\n"
+    "- Use the correct grain specified by the plan.\n"
+    "- Apply the plan's filters.\n"
+    "- Do not invent columns that are not present in the schema.\n"
+    "- Category names are Portuguese.\n\n"
+
+    "EXPLORATORY RULE:\n"
+    "For exploratory questions, the user is asking you to DISCOVER patterns. "
+    "Do not return an empty dataset merely because the user did not specify "
+    "a metric.\n"
+    "Use the plan to determine the relevant data needed for investigation.\n"
+    "For purchasing-pattern questions, customer-level purchasing behavior "
+    "may require aggregating order/order-item data into customer-level metrics "
+    "such as order count, total spend, average order value, and item count.\n"
+    "If the plan requires derived metrics, calculate them in SQL using "
+    "GROUP BY rather than expecting pandas to reconstruct missing information.\n\n"
+
+    "Do NOT ask the user questions or answer in prose. Immediately inspect "
+    "the schema and call the appropriate tools."
+    + plan_block
+))
+
+    msgs = current_turn_messages(state)
+    response = llm_with_tools.invoke([system, *msgs])
+    return {"input_text": [response], "code_proposed_pandas": False, "fetch_sql": ""}
 
 
 def fetch_tool_node(state: PandasState) -> dict:
@@ -163,7 +271,15 @@ def data_quality_report(df: pd.DataFrame) -> str:
 
 def data_quality_node(state: PandasState) -> dict:
     df = load_dataframe(state.fetch_sql)
-    report = data_quality_report(df)
+
+    if df.empty:
+        report = (
+            "EMPTY DATASET: The fetch query returned 0 rows. "
+            "No analysis should be performed."
+        )
+    else:
+        report = data_quality_report(df)
+
     return {"qa_report": report}
 
 
@@ -180,25 +296,53 @@ llm_with_analysis_tools = llm.bind_tools(analysis_tools)
 
 
 def propose_analysis_node(state: PandasState) -> dict:
+    plan = state.plan if state.plan else None
+
+    plan_block = ""
+    if plan:
+        plan_block = (
+            f"\n\nANALYSIS PLAN:\n"
+            f"- intent: {plan.intent}\n"
+            f"- metrics: {plan.metrics}\n"
+            f"- dimensions: {plan.dimensions}\n"
+            f"- comparison: {plan.comparison}\n"
+        )
+
     system = SystemMessage(content=(
-        "Write pandas code to answer the user's question. `df` holds the data; "
+        "Write pandas code to answer the question. `df` holds the fetched data; "
         "`pd`, `np` are available. Assign the final answer to a variable `result`.\n\n"
-        "Call the propose_analysis_code TOOL with your code.\n\n"
-        "PRINCIPLES:\n"
-        "- Compute the MINIMUM needed to answer the question directly. Do not compute "
-        "every possible metric.\n"
-        "- Prefer ONE clear, interpretable comparison (e.g. group means, an on-time "
-        "vs late split, a simple correlation) over many variants of the same thing.\n"
-        "- Account for the data-quality report (drop nulls, handle duplicates/outliers) "
-        "but don't turn every cleaning choice into a separate reported number.\n"
-        "- `result` should be a SMALL dict holding only the few numbers that answer "
-        "the question — not a dump of everything you calculated.\n\n"
+        "Call the propose_analysis_code TOOL with your code. Do NOT write the code as "
+        "text in your reply. After calling the tool, output nothing.\n\n"
+        "Compute ONLY what the plan's intent requires — nothing more:\n"
+        "- aggregate: the requested totals/means for the metrics.\n"
+        "- comparison: compare the metric across the two groups named in 'comparison' "
+        "(report each group's value and the difference).\n"
+        "- correlation: the correlation coefficient(s) for the metrics (Pearson and "
+        "Spearman), nothing else.\n"
+        "- distribution: summary statistics and shape of the metric.\n"
+        "- trend: the metric over the ordered dimension (e.g. over time).\n"
+        "- ranking: the ordered top/bottom results for the metric by dimension.\n\n"
+        "- exploratory: the question is open-ended. Do NOT invent columns. Summarize only "
+        "the real columns available (basic describe/counts), and note that the question "
+        "needs narrowing. Keep result small."
+        "Account for issues in the data-quality report (drop nulls before correlating, "
+        "handle duplicates/outliers) but do not turn every cleaning choice into a "
+        "separate reported number. `result` must be a SMALL dict holding only the few "
+        "numbers that answer the question, not a dump of everything you calculated."
+        + plan_block
+    ))
+
+    # user question + fetch context, anchored to the current turn
+    human = HumanMessage(content=(
         f"Question: {latest_question(state)}\n"
         f"Fetch SQL: {state.fetch_sql}\n"
         f"Data-quality report:\n{state.qa_report}"
     ))
-    response = llm_with_analysis_tools.invoke([system])
-    return {"input_text": [response]}
+
+    prompt = [system, human]
+
+
+    return {"input_text": [llm_with_analysis_tools.invoke(prompt)]}
 
 
 def analysis_tool_node(state: PandasState) -> dict:
@@ -215,7 +359,9 @@ def analysis_tool_node(state: PandasState) -> dict:
 
 
 def approval_node(state: PandasState) -> dict:
+    plan = state.plan if state.plan else None
     decision = interrupt({
+        "plan": plan.model_dump() if plan else {},
         "qa_report": state.qa_report,
         "proposed_code": state.proposed_code,
         "instructions": "action: approve / reject / revise (+notes)",
@@ -322,6 +468,7 @@ def after_propose(state):
 graph = StateGraph(PandasState)
 
 # add every station (node)
+graph.add_node("analysis_plan", analysis_plan_node)
 graph.add_node("fetch_llm", fetch_llm_node)
 graph.add_node("fetch_tools", fetch_tool_node)
 graph.add_node("data_quality", data_quality_node)
@@ -332,7 +479,8 @@ graph.add_node("execute", execute_node)
 graph.add_node("answer", answer_node)
 
 
-graph.add_edge(START, "fetch_llm")
+graph.add_edge(START, "analysis_plan")
+graph.add_edge("analysis_plan", "fetch_llm")
 
 
 graph.add_conditional_edges("fetch_llm", after_fetch_llm,
@@ -375,6 +523,9 @@ def ask(question: str, thread_id: str = "pandas-1"):
     result = pandas_agent.invoke(
         {"input_text": [HumanMessage(content=question)]}, config
     )
+    breakpoint()
+    planner = result.get("plan")
+    print(planner)
 
 
     while "__interrupt__" in result:

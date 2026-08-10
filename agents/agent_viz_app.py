@@ -20,18 +20,52 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import plotly
 import seaborn as sns
+from functools import lru_cache
+from sqlalchemy import inspect
+
 
 from agents.agent_sql_app import engine, llm, list_tables, schema_tables
 
 load_dotenv()
 
+from typing import Literal
+from pydantic import BaseModel, Field
+
+from functools import lru_cache
+from sqlalchemy import inspect   # add inspect to your existing sqlalchemy import
+
+@lru_cache(maxsize=1)
+def get_schema_string() -> str:
+    insp = inspect(engine)
+    lines = []
+    for t in insp.get_table_names():
+        cols = ", ".join(f"{c['name']} ({c['type']})" for c in insp.get_columns(t))
+        lines.append(f"{t}: {cols}")
+    return "\n".join(lines)
+
+class ChartPlan(BaseModel):
+    chart_type: Literal[
+        "bar", "line", "scatter", "histogram", "box", "pie", "heatmap"
+    ] = Field(..., description="The chart type that best answers the question")
+    x: str = Field("", description="Column for the x-axis / categories (real column name)")
+    y: str = Field("", description="Column for the y-axis / values (real column; empty for histogram)")
+    dimensions: list[str] = Field(default_factory=list, description="Grouping / color-by columns")
+    filters: list[str] = Field(default_factory=list, description="Conditions, e.g. ['order_status = delivered']")
+    top_n: int = Field(0, description="For rankings, limit to top N (0 = no limit)")
+    aggregation: str = Field("", description="How to aggregate y: sum, mean, count (empty if raw)")
+    
+    
 class VizState(BaseModel):
     input_text: Annotated[list[AnyMessage], add_messages]
+    chart_plan:  ChartPlan | None = None
+    schema_info: str = ""
     fetch_sql: str = ""
     query_proposed_viz: bool = False
     data_summary: str = ""
     chart_code: str = ""
     chart_path: str = ""
+    chart_error: str = ""
+    chart_attempts: int = 0 
     action: str = ""
     
     
@@ -41,9 +75,20 @@ def propose_fetch_sql(sql: str) -> str:
     inspecting the schema. Pull only the needed columns, not SELECT *."""
     return "Fetch query recorded."
 
+def latest_question(state) -> str:
+    for msg in reversed(state.input_text):
+        if isinstance(msg, HumanMessage):
+            return msg.content
+    return ""
 
-tools = [list_tables, schema_tables, propose_fetch_sql]
-llm_with_tools = llm.bind_tools(tools)
+schema_tools = [list_tables, schema_tables]
+sql_tools = [propose_fetch_sql]
+
+llm_with_schema_tools = llm.bind_tools(schema_tools)
+llm_with_sql_tools = llm.bind_tools(sql_tools)
+
+
+chart_plan_llm = llm.with_structured_output(ChartPlan)
 
 
 SYSTEM = SystemMessage(content=(
@@ -68,40 +113,179 @@ def current_turn_messages(state):
     return msgs[last_human:]
 
 
-def fetch_llm_node(state: VizState):
-    
-    system_msg = SYSTEM
-    user_msg = current_turn_messages(state)
-    
-    promt = [system_msg , *user_msg]
-    llm_respopnse = llm_with_tools.invoke(promt)
-    
-    return{"input_text": [llm_respopnse], "query_proposed_viz": False, "fetch_sql": ""}
 
-def fetch_tool_node(state: VizState):
+def chart_plan_node(state: VizState) -> dict:
+    system = SystemMessage(content=(
+    "You are planning a chart. Read the user's question and produce a structured "
+    "plan describing WHAT to chart.\n"
+    f"SCHEMA:\n{get_schema_string()}\n\n"
+
+    "- chart_type: pick the single best type:\n"
+    "    bar = category comparison or ranking; line = trend over time; "
+    "scatter = relationship between two numerics; histogram = distribution of one "
+    "numeric; box = distribution across groups; heatmap = correlation matrix; "
+    "pie = part-to-whole (AVOID unless truly part-to-whole with few categories — "
+    "prefer bar).\n"
+
+    "- x, y: REAL column names only. Do NOT invent derived names.\n"
+
+    "- dimensions: grouping/color columns.\n"
+    "- filters: conditions.\n"
+    "- top_n: for rankings, the N to show.\n"
+    "- aggregation: sum / mean / count if y needs aggregating.\n"
+
+    "- For 'number of orders', use order_id as y with aggregation='count'.\n"
+    "- For unique counts, the SQL stage should use COUNT(DISTINCT ...).\n"
+
+    "Plan for THIS question only. Keep it minimal."
+))
+    human = HumanMessage(content=latest_question(state))
+    plan = chart_plan_llm.invoke([system, human])
+    return {"chat_plan": plan}
+
+# def schema_llm_node(state: VizState) -> dict:
+
+#     plan = state.plan
+
+#     plan_block = ""
+#     if plan:
+#         plan_block = (
+#             "\n\nCHART PLAN:\n"
+#             f"- chart_type: {plan.chart_type}\n"
+#             f"- x: {plan.x}\n"
+#             f"- y: {plan.y}\n"
+#             f"- dimensions: {plan.dimensions}\n"
+#             f"- filters: {plan.filters}\n"
+#             f"- aggregation: {plan.aggregation}\n"
+#             f"- top_n: {plan.top_n}\n"
+#         )
+
+#     system = SystemMessage(content=(
+#         "You are inspecting the database schema before generating SQL.\n\n"
+
+#         "Use list_tables first to identify available tables.\n"
+#         "Then use schema_tables for the tables relevant to the chart plan.\n\n"
+        
+#         "Once you have inspected the tables needed for the chart plan, STOP calling "
+#         "tools and reply with a single word: 'done'. Do not call any more tools "
+#         "after that.\n\n"
+
+#         "Do not generate SQL yet.\n"
+#         "Do not answer the user.\n"
+#         "Only inspect the schema and call the tools."
+#         + plan_block
+#     ))
+
+#     response = llm_with_schema_tools.invoke(
+#         [system, HumanMessage(content=latest_question(state))]
+#     )
+
+#     return {
+#         "input_text": [response]
+#     }
     
-    tool_name = {t.name: t for t in tools}
+    
+def fetch_sql_llm_node(state: VizState) -> dict:
+    plan = state.chart_plan if state.chart_plan else None 
+
+    plan_block = ""
+    if plan:
+        plan_block = (
+            "\n\nCHART PLAN:\n"
+            f"- chart_type: {plan.chart_type}\n"
+            f"- x: {plan.x}\n"
+            f"- y: {plan.y}\n"
+            f"- dimensions: {plan.dimensions}\n"
+            f"- filters: {plan.filters}\n"
+            f"- aggregation: {plan.aggregation}\n"
+            f"- top_n: {plan.top_n}\n"
+        )
+
+    system = SystemMessage(content=(
+        "You are a SQL analyst.\n\n"
+        "Generate the SQLite SQL required to fetch the data for the chart.\n\n"
+        "You are given the database schema below. Use ONLY columns and tables that "
+        "actually exist in it.\n\n"
+        "RULES:\n"
+        "- Never use SELECT *.\n"
+        "- Use SQLite-compatible SQL.\n"
+        "- Select only columns required for the chart.\n"
+        "- Follow the chart plan exactly.\n"
+        "- Apply filters, aggregation, and top_n from the plan.\n"
+        "- For counts use COUNT; for unique entities use COUNT(DISTINCT ...).\n"
+        "- Use correct JOIN conditions based on the schema.\n"
+        "- Do not invent columns. Category names are Portuguese.\n\n"
+        "Call propose_fetch_sql exactly once.\n"
+        + plan_block
+    ))
+
+    human = HumanMessage(content=(
+        f"User question:\n{latest_question(state)}\n\n"
+        f"DATABASE SCHEMA:\n{get_schema_string()}"
+    ))
+
+    response = llm_with_sql_tools.invoke([system, human])
+    return {"input_text": [response], "query_proposed_viz": False}
+
+def fetch_sql_tool_node(state: VizState) -> dict:
+
     last_msg = state.input_text[-1]
+
     out = []
     updates = {}
     proposed = False
-    
+
     for call in last_msg.tool_calls:
+
         if call["name"] == "propose_fetch_sql":
             proposed = True
+
             updates["fetch_sql"] = call["args"]["sql"]
-            out.append(ToolMessage(content= "sql query fetched", tool_call_id = call["id"]))
-            
-            
-        else:
-            res = tool_name[call["name"]].invoke(call["args"])
-            out.append(ToolMessage(content=str(res), tool_call_id = call["id"]))
-            
+
+            out.append(
+                ToolMessage(
+                    content="SQL query recorded.",
+                    tool_call_id=call["id"]
+                )
+            )
+
     updates["input_text"] = out
     updates["query_proposed_viz"] = proposed
-    
+
     return updates
 
+# def schema_tool_node(state: VizState) -> dict:
+
+#     tools_by_name = {
+#         t.name: t for t in schema_tools
+#     }
+
+#     last_msg = state.input_text[-1]
+
+#     out = []
+#     schema_parts = []
+
+#     for call in last_msg.tool_calls:
+
+#         result = tools_by_name[call["name"]].invoke(call["args"])
+
+#         schema_parts.append(
+#             f"{call['name']}:\n{result}"
+#         )
+
+#         out.append(
+#             ToolMessage(
+#                 content=str(result),
+#                 tool_call_id=call["id"]
+#             )
+#         )
+
+#     schema_info = "\n\n".join(schema_parts)
+
+#     return {
+#         "input_text": out,
+#         "schema_info": schema_info
+#     }
 
 def load_df(fetch_sql: str) -> pd.DataFrame:
     
@@ -125,25 +309,49 @@ tools_chart = [propose_chart_code]
 llm_with_viz_tool = llm.bind_tools(tools_chart)
 
 def propose_chart_node(state: VizState) -> dict:
+    plan = state.chart_plan if state.chart_plan else None
+
+    plan_block = ""
+    if plan:
+        plan_block = (
+            f"\n\nCHART PLAN:\n"
+            f"- chart_type: {plan.chart_type}\n"
+            f"- x: {plan.x}   y: {plan.y}\n"
+            f"- dimensions: {plan.dimensions}   top_n: {plan.top_n}\n"
+        )
+
     system = SystemMessage(content=(
-        "Write matplotlib code to chart the data and answer the question. "
-        "The DataFrame is in `df`; pd, np, plt available. "
-        "Use only standard matplotlib. For styling, pass color and linestyle "
-        "separately (e.g. plt.plot(x, y, color='black', linestyle='--')) OR use a "
-        "format string as a positional arg (plt.plot(x, y, 'k--')) — never put a "
-        "format string like 'k--' inside ls= or linestyle=. Save with "
-        "plt.savefig('chart_output.png', bbox_inches='tight'), then plt.close()."
-        "Save the figure to 'chart_output.png'. Pick an appropriate chart type.\n\n"
+        "Write matplotlib code to build the planned chart. The DataFrame is in `df`; "
+        "`pd`, `np`, `plt` are available.\n\n"
+        "Build the chart_type the plan specifies:\n"
+        "- bar: x on categories, y as bars; if top_n set, show only the top N sorted "
+        "descending; use barh for readable long category labels.\n"
+        "- line: x on the (time) axis, y as the line; sort by x first.\n"
+        "- scatter: x vs y as points; add a light trend line if it aids reading.\n"
+        "- histogram: distribution of x. If the data is heavily right-skewed, draw TWO "
+        "panels side by side (linear scale and log scale) so the shape is legible; mark "
+        "the median.\n"
+        "- box: y distribution across the x groups, showing outliers.\n"
+        "- heatmap: correlation matrix of the numeric columns (annotated).\n"
+        "- pie: only for part-to-whole with few slices.\n\n"
+        "STYLE RULES:\n"
+        "- Pass color and linestyle SEPARATELY (e.g. color='black', linestyle='--'); "
+        "NEVER put a format string like 'k--' inside ls= or linestyle=.\n"
+        "- Add a title and axis labels. Use tight_layout.\n"
+        "- Save to 'chart_output.png' with bbox_inches='tight', then plt.close().\n\n"
+        "Call the propose_chart_code TOOL with your code. Do NOT write code as text. "
+        "After calling the tool, output nothing."
+        + plan_block
+    ))
+    human = HumanMessage(content=(
         f"Question: {latest_question(state)}\n"
         f"Data available (use these exact column names):\n{state.data_summary}"
     ))
-    return {"input_text": [llm_with_viz_tool.invoke([system])]}
 
-def latest_question(state) -> str:
-    for msg in reversed(state.input_text):
-        if isinstance(msg, HumanMessage):
-            return msg.content
-    return ""
+
+    return {"input_text": [llm_with_viz_tool.invoke([system, human])]}
+
+
 
 def fetch_chart_node(state: VizState):
     
@@ -170,7 +378,9 @@ def fetch_chart_node(state: VizState):
 
 
 def approval_node(state: VizState) -> dict:
+    plan = state.chart_plan if state.chart_plan else None
     decision = interrupt({
+        "plan": plan.model_dump() if plan else {},
         "chart_code": state.chart_code,
         "data_summary": state.data_summary,      # <-- now it's in the payload
         "instructions": "action: approve / reject / revise (+notes)",
@@ -207,12 +417,15 @@ def execute_chart_node(state: VizState) -> dict:
     
 def data_summary_node(state: VizState) -> dict:
     df = load_df(state.fetch_sql)
-    if len(df) <= 25:
-        table = df.to_string(index=False)          # rankings: show all rows
-    else:
-        table = (f"{df.head(10).to_string(index=False)}\n... ({len(df)} rows)\n"
-                 f"{df.describe().to_string()}")
-    return {"data_summary": f"Columns: {list(df.columns)}\n{table}"}
+    if len(df) == 0:
+        return {"data_summary": "ERROR: the fetch returned no rows — the planned "
+                                 "columns may not exist or the filters excluded everything."}
+    summary = (
+        f"Rows: {len(df)}, Columns: {list(df.columns)}\n"
+        f"Sample:\n{df.head(3).to_string()}\n"
+        f"Numeric summary:\n{df.describe().to_string()}"
+    )
+    return {"data_summary": summary}
     
     
 def return_node(state: VizState) -> dict:
@@ -235,13 +448,25 @@ def return_node(state: VizState) -> dict:
     return {"input_text": [AIMessage(content=msg)]}
 
 
-def after_fetch_llm(s): return "fetch_tools" if s.input_text[-1].tool_calls else "end"
-def after_fetch_tools(s): return "data_summary" if s.query_proposed_viz else "fetch_llm"
+# def after_schema_llm(state):
+#     return "schema_tools" if state.input_text[-1].tool_calls else "fetch_sql"
+# def after_schema_tools(state):
+
+#     return "schema_llm"
+def after_fetch_sql(state):
+
+    if state.input_text[-1].tool_calls:
+        return "fetch_sql_tools"
+
+    return "end"
 def after_propose_chart(s): return "chart_tools" if s.input_text[-1].tool_calls else "end"
 
 graph = StateGraph(VizState)
-graph.add_node("fetch_llm", fetch_llm_node)
-graph.add_node("fetch_tools", fetch_tool_node)
+graph.add_node("chart_plan", chart_plan_node)
+
+
+graph.add_node("fetch_sql", fetch_sql_llm_node)
+graph.add_node("fetch_sql_tools", fetch_sql_tool_node)
 graph.add_node("data_summary", data_summary_node)
 graph.add_node("propose_chart", propose_chart_node)
 graph.add_node("chart_tools", fetch_chart_node)
@@ -249,14 +474,53 @@ graph.add_node("approval", approval_node)
 graph.add_node("execute", execute_chart_node)
 graph.add_node("return", return_node)
 
-graph.add_edge(START, "fetch_llm")
-graph.add_conditional_edges("fetch_llm", after_fetch_llm, {"fetch_tools":"fetch_tools","end":END})
-graph.add_conditional_edges("fetch_tools", after_fetch_tools,
-                            {"data_summary": "data_summary", "fetch_llm": "fetch_llm"})
-graph.add_edge("data_summary", "propose_chart")
-graph.add_conditional_edges("propose_chart", after_propose_chart, {"chart_tools":"chart_tools","end":END})
-graph.add_edge("chart_tools", "approval")
-graph.add_conditional_edges("approval", approval_router, {"propose_chart":"propose_chart","execute":"execute","end":END})
+graph.add_edge(START, "chart_plan")
+
+graph.add_edge("chart_plan", "fetch_sql") 
+
+graph.add_conditional_edges(
+    "fetch_sql",
+    after_fetch_sql,
+    {
+        "fetch_sql_tools": "fetch_sql_tools",
+        "end": END
+    }
+)
+
+graph.add_edge(
+    "fetch_sql_tools",
+    "data_summary"
+)
+
+graph.add_edge(
+    "data_summary",
+    "propose_chart"
+)
+
+graph.add_conditional_edges(
+    "propose_chart",
+    after_propose_chart,
+    {
+        "chart_tools": "chart_tools",
+        "end": END
+    }
+)
+
+graph.add_edge(
+    "chart_tools",
+    "approval"
+)
+
+graph.add_conditional_edges(
+    "approval",
+    approval_router,
+    {
+        "propose_chart": "propose_chart",
+        "execute": "execute",
+        "end": END
+    }
+)
+
 graph.add_edge("execute", "return")
 graph.add_edge("return", END)
 

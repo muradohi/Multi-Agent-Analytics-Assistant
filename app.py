@@ -7,6 +7,7 @@ import json
 import streamlit as st
 import pandas as pd
 from sqlalchemy import text, inspect
+from pydantic import BaseModel
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 from langchain_community.callbacks import get_openai_callback
@@ -230,11 +231,16 @@ def show_debug(result, stage: str):
     }
     
 def log_run(question, result, duration, cb):
+    plan = result.get("plan")
+
+    if isinstance(plan, BaseModel):
+        plan = plan.model_dump(mode="json")
     row = {
         "ts": datetime.now().isoformat(),
         "thread_id": st.session_state.thread_id,
         "question": question,
         "route": result.get("destination"),
+        "plan": plan,
         "interrupted": "__interrupt__" in result,
         "duration_s": round(duration, 2),
         "total_tokens": cb.total_tokens,
@@ -357,14 +363,31 @@ if st.session_state.phase in ("awaiting_approval", "revising"):
 
             elif "proposed_code" in payload:
                 st.session_state.artifact = payload["proposed_code"]
+
+                plan = payload.get("plan") or {}
+                if plan:
+                    bits = [f"**{plan.get('intent', '')}**"]
+                    if plan.get("metrics"):    bits.append(f"of `{', '.join(plan['metrics'])}`")
+                    if plan.get("comparison"): bits.append(f"comparing {plan['comparison']}")
+                    elif plan.get("dimensions"): bits.append(f"by `{', '.join(plan['dimensions'])}`")
+                    st.info("Understood as: " + " ".join(bits))
+
                 if payload.get("qa_report"):
                     with st.expander("Data-quality report"):
                         st.text(payload["qa_report"])
+
                 st.markdown("**Proposed analysis code** — review before it runs")
                 st.code(payload["proposed_code"], language="python")
 
             elif "chart_code" in payload:
                 st.session_state.artifact = payload["chart_code"]
+                plan = payload.get("plan") or {}
+                if plan:
+                    line = f"**{plan.get('chart_type','')}**"
+                    if plan.get("y"): line += f" of `{plan['y']}`"
+                    if plan.get("x"): line += f" by `{plan['x']}`"
+                    if plan.get("top_n"): line += f" (top {plan['top_n']})"
+                    st.info("Charting as: " + line)
                 st.markdown("**Proposed chart code** — review before it runs")
                 st.code(payload["chart_code"], language="python")
 
