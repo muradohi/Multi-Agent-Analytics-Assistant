@@ -31,6 +31,9 @@ pool = ConnectionPool(
     conninfo=DB_URL,
     max_size=10,
     open=False,
+    timeout=30,
+    max_idle=300,
+    check=ConnectionPool.check_connection,
     kwargs={"autocommit": True, "prepare_threshold": 0},
 )
 pool.open(wait=True, timeout=30)
