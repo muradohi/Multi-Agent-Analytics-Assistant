@@ -92,17 +92,49 @@ EXAMPLES = [
 # SESSION STATE
 # ---------------------------------------------------------------------------
     
-CONV_PATH = "conv/conversations.json"
+import os, json, psycopg
+from dotenv import load_dotenv
+
+load_dotenv()
+DB_URL = os.environ["DATABASE_URL"]
+
+def _conn():
+    return psycopg.connect(DB_URL, autocommit=True)
+
+def init_conv_table():
+    with _conn() as c:
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS conversations (
+                conv_id    TEXT PRIMARY KEY,
+                updated_at TIMESTAMPTZ DEFAULT now(),
+                data       JSONB NOT NULL
+            )
+        """)
 
 def save_conversations():
-    with open(CONV_PATH, "w") as f:
-        json.dump(st.session_state.conversations, f, indent=2)
+    with _conn() as c:
+        for conv_id, conv in st.session_state.conversations.items():
+            c.execute(
+                """INSERT INTO conversations (conv_id, data, updated_at)
+                   VALUES (%s, %s, now())
+                   ON CONFLICT (conv_id)
+                   DO UPDATE SET data = EXCLUDED.data, updated_at = now()""",
+                (conv_id, json.dumps(conv)),
+            )
 
 def load_conversations() -> dict:
-    if os.path.exists(CONV_PATH):
-        with open(CONV_PATH) as f:
-            return json.load(f)
-    return {}
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT conv_id, data FROM conversations ORDER BY updated_at DESC"
+        ).fetchall()
+    return {conv_id: data for conv_id, data in rows}
+
+def delete_conversation_db(conv_id: str):
+    with _conn() as c:
+        c.execute("DELETE FROM conversations WHERE conv_id = %s", (conv_id,))
+        
+        
+        
 def init_state():
     saved = load_conversations()
     defaults = {
@@ -123,6 +155,7 @@ def init_state():
     for k, v in defaults.items():
         st.session_state.setdefault(k, v)
 
+init_conv_table()
 init_state()
 
 
@@ -177,6 +210,7 @@ def start_new_chat():
 
 def delete_conversation(conv_id):
     st.session_state.conversations.pop(conv_id, None)
+    delete_conversation_db(conv_id)                     # <- add
     if st.session_state.current_conv_id == conv_id:
         st.session_state.current_conv_id = next(iter(st.session_state.conversations), None)
     save_conversations()

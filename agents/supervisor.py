@@ -21,8 +21,18 @@ import matplotlib.pyplot as plt
 import plotly
 import sqlite3
 
+from psycopg_pool import ConnectionPool
+from langgraph.checkpoint.postgres import PostgresSaver
 
 load_dotenv()
+DB_URL = os.environ["DATABASE_URL"]
+
+# a connection pool handles concurrent requests (needed once it's a service)
+pool = ConnectionPool(
+    conninfo=DB_URL,
+    max_size=10,
+    kwargs={"autocommit": True, "prepare_threshold": 0},
+)
 
 try:
     config_path = Path(__file__).parent.parent / "config/config.yaml"
@@ -261,8 +271,9 @@ graph.add_edge("viz_node", END)
 graph.add_edge("direct_node", END)
 
 
-conn = sqlite3.connect("conv/checkpoints.db", check_same_thread=False)
-checkpointer = SqliteSaver(conn)
+checkpointer = PostgresSaver(pool)
+checkpointer.setup()
+
 sup_graph = graph.compile(checkpointer=checkpointer)
 
 def run_supervisor(question: str, thread_id: str=  "sup-1"):
