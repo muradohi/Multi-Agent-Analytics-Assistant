@@ -7,4 +7,5 @@ pymysql
 pandas
 python-dotenv
 streamlit
- 
+psycopg[binary]
+psycopg-pool
