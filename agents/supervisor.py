@@ -12,12 +12,14 @@ import os
 from langgraph.graph import StateGraph, START, END
 import yaml
 from pathlib import Path
+from langgraph.checkpoint.sqlite import SqliteSaver
 
 from agents.agent_sql_app import UserInput, llm, ask, sql_agent
 from agents.agent_pandas_app import PandasState ,pandas_agent
 from agents.agent_viz_app import VizState, viz_agent
 import matplotlib.pyplot as plt
 import plotly
+import sqlite3
 
 
 load_dotenv()
@@ -259,8 +261,9 @@ graph.add_edge("viz_node", END)
 graph.add_edge("direct_node", END)
 
 
-checkpointer = InMemorySaver()
-sup_graph = graph.compile(checkpointer= checkpointer)
+conn = sqlite3.connect("conv/checkpoints.db", check_same_thread=False)
+checkpointer = SqliteSaver(conn)
+sup_graph = graph.compile(checkpointer=checkpointer)
 
 def run_supervisor(question: str, thread_id: str=  "sup-1"):
 
@@ -268,7 +271,6 @@ def run_supervisor(question: str, thread_id: str=  "sup-1"):
     result = sup_graph.invoke(
         {"input_text": [HumanMessage(content=question)]}, sup_config
     )
-    print(result)
 
 
 

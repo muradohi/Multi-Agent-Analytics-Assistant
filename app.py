@@ -3,6 +3,7 @@ import shutil
 import time
 from datetime import datetime
 import json
+import uuid
 
 import streamlit as st
 import pandas as pd
@@ -11,6 +12,7 @@ from pydantic import BaseModel
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 from langchain_community.callbacks import get_openai_callback
+
 
 from agents import sup_graph, engine
 
@@ -89,7 +91,20 @@ EXAMPLES = [
 # ---------------------------------------------------------------------------
 # SESSION STATE
 # ---------------------------------------------------------------------------
+    
+CONV_PATH = "conv/conversations.json"
+
+def save_conversations():
+    with open(CONV_PATH, "w") as f:
+        json.dump(st.session_state.conversations, f, indent=2)
+
+def load_conversations() -> dict:
+    if os.path.exists(CONV_PATH):
+        with open(CONV_PATH) as f:
+            return json.load(f)
+    return {}
 def init_state():
+    saved = load_conversations()
     defaults = {
         "phase": "idle",
         "thread_id": "ui-conv-1",
@@ -99,8 +114,8 @@ def init_state():
         "interrupt_payload": {},
         "artifact": "",
         "answer": "",
-        "conversations": {"conv-1": {"title": "New chat", "messages": [], "thread_id": "ui-conv-1"}},
-        "current_conv_id": "conv-1",
+        "conversations": saved or {"conv-1": {"title": "New chat", "messages": [], "thread_id": "ui-conv-1"}},
+        "current_conv_id": next(iter(saved), "conv-1") if saved else "conv-1",
         "pending_prompt": None,
         "debug": False,
         "last_debug": None,
@@ -127,6 +142,7 @@ def run_sql_preview(sql: str):
             return pd.read_sql(text(sql), conn), None
     except Exception as e:
         return None, str(e)
+    
 
 def final_answer(result) -> str:
     for msg in reversed(result.get("input_text", [])):
@@ -151,26 +167,19 @@ def pill(route: str) -> str:
             f'{a["icon"]} {a["label"]} agent</span>')
 
 def start_new_chat():
-    new_id = f"conv-{int(time.time())}"
-    st.session_state.conversations[new_id] = {
-        "title": "New chat", "messages": [], "thread_id": f"ui-{new_id}",
-    }
+    new_id = f"conv-{uuid.uuid4().hex[:8]}"
     st.session_state.current_conv_id = new_id
-    st.session_state.thread_id = f"ui-{new_id}"
-    for k in ("phase", "route", "reasoning", "artifact", "answer"):
-        st.session_state[k] = "idle" if k == "phase" else ""
+    st.session_state.thread_id = new_id
+    st.session_state.conversations[new_id] = {"thread_id": new_id, "title": "New chat", "messages": []}
+    for k in ("phase", "route", "artifact", "answer"):
+        st.session_state[k] = "" if k != "phase" else "idle"
+    save_conversations()
 
 def delete_conversation(conv_id):
     st.session_state.conversations.pop(conv_id, None)
-    if not st.session_state.conversations:
-        start_new_chat()
-        return
     if st.session_state.current_conv_id == conv_id:
-        fallback = next(iter(st.session_state.conversations))
-        st.session_state.current_conv_id = fallback
-        st.session_state.thread_id = st.session_state.conversations[fallback]["thread_id"]
-        for k in ("phase", "route", "artifact", "answer"):
-            st.session_state[k] = "viewing" if k == "phase" else ""
+        st.session_state.current_conv_id = next(iter(st.session_state.conversations), None)
+    save_conversations()
 
 def save_turn():
     conv = st.session_state.conversations[st.session_state.current_conv_id]
@@ -181,7 +190,6 @@ def save_turn():
         "artifact": st.session_state.artifact,
         "chart": None,
     }
-    # For a viz turn, snapshot the chart to a per-turn file so history survives.
     if st.session_state.route == "viz" and os.path.exists("chart_output.png"):
         os.makedirs("charts", exist_ok=True)
         dest = f"charts/{st.session_state.current_conv_id}-{len(conv['messages'])}.png"
@@ -190,6 +198,7 @@ def save_turn():
     conv["messages"].append(msg)
     if conv["title"] == "New chat" and st.session_state.question:
         conv["title"] = st.session_state.question[:38]
+    save_conversations()          # <- add this line at the end
 
 def process(result, skipped=False):
     if result.get("destination"):
@@ -273,12 +282,14 @@ def artifact_lang() -> str:
 with st.sidebar:
     st.markdown("### 🧭 Olist Analytics")
     st.markdown(f"- **thread_id:** `{st.session_state.thread_id}`")
+
     if st.button("＋  New chat", use_container_width=True, type="primary"):
         start_new_chat()
         st.rerun()
 
-    st.markdown("###### Conversations")
     st.session_state.debug = st.toggle("🔍 Debug mode", value=st.session_state.debug)
+
+    st.markdown("###### Conversations")
     for conv_id, conv in reversed(list(st.session_state.conversations.items())):
         active = conv_id == st.session_state.current_conv_id
         col_open, col_del = st.columns([6, 1])
@@ -303,6 +314,10 @@ with st.sidebar:
             st.dataframe(pd.DataFrame(columns, columns=["column", "type"]),
                          hide_index=True, use_container_width=True)
 
+
+if (not st.session_state.current_conv_id
+        or st.session_state.current_conv_id not in st.session_state.conversations):
+    start_new_chat()
 
 current = st.session_state.conversations[st.session_state.current_conv_id]
 
