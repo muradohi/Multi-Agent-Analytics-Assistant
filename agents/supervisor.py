@@ -27,12 +27,13 @@ from langgraph.checkpoint.postgres import PostgresSaver
 load_dotenv()
 DB_URL = os.environ["DATABASE_URL"]
 
-# a connection pool handles concurrent requests (needed once it's a service)
 pool = ConnectionPool(
     conninfo=DB_URL,
     max_size=10,
+    open=False,
     kwargs={"autocommit": True, "prepare_threshold": 0},
 )
+pool.open(wait=True, timeout=30)
 
 try:
     config_path = Path(__file__).parent.parent / "config/config.yaml"
